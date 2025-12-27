@@ -1,0 +1,15 @@
+{
+  "name": "gemini-image-downloader",
+  "version": "1.0.0",
+  "description": "Download images from public Google Gemini chat links",
+  "main": "download-gemini-images.js",
+  "scripts": {
+    "start": "node download-gemini-images.js"
+  },
+  "dependencies": {
+    "fs-extra": "^11.3.3",
+    "path": "^0.12.7",
+    "playwright": "^1.57.0"
+  },
+  "type": "module"
+}
