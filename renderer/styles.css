@@ -1,0 +1,114 @@
+:root {
+  color-scheme: dark;
+  --bg: #04060f;
+  --panel: rgba(12, 17, 37, 0.85);
+  --card: rgba(12, 17, 37, 0.95);
+  --accent: #6fffe9;
+  --text: #f4f7ff;
+  --text-muted: #97a0c3;
+  --border: rgba(255, 255, 255, 0.08);
+  --error: #ff6b7b;
+  --success: #6dff8b;
+}
+
+form {
+  max-width: 600px;
+  margin: 20px auto;
+  padding: 20px;
+  background: var(--panel);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.field {
+  margin-bottom: 20px;
+}
+
+.field span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-muted);
+}
+
+input[type="url"],
+input[type="text"] {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(8, 12, 26, 0.65);
+  color: var(--text);
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.folder-row {
+  display: flex;
+  gap: 12px;
+}
+
+.folder-row input {
+  flex: 1;
+}
+
+#browse-btn, #start-btn {
+  padding: 12px 20px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(8, 12, 26, 0.65);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+#start-btn {
+    background: linear-gradient(135deg, #30f6ff, #3e5cff 60%, #ff54b0);
+    color: #05070f;
+    font-weight: 600;
+}
+
+.actions {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+#log-output {
+  max-width: 600px;
+  margin: 20px auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-height: 100px;
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.error {
+  color: var(--error);
+}
+
+#status-pill {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#status-pill.idle {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+}
+
+#status-pill.running {
+  background: rgba(111, 255, 233, 0.2);
+  color: var(--accent);
+}
+
+#status-pill.done {
+  background: rgba(109, 255, 139, 0.2);
+  color: var(--success);
+}

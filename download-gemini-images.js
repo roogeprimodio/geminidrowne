@@ -1,27 +1,41 @@
-import { chromium } from 'playwright';
-import fs from 'fs-extra';
-import path from 'path';
-import { fileURLToPath } from 'url';
+const { chromium } = require('playwright');
+const fs = require('fs-extra');
+const path = require('path');
+const readline = require('readline/promises');
+const { stdin: input, stdout: output } = require('node:process');
 
-// Get the current directory
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const DEFAULT_OUTPUT_DIR = path.join(process.cwd(), 'gemini_images');
 
-// Configuration
-const OUTPUT_DIR = path.join(__dirname, 'gemini_images');
+function createLogger(callback) {
+  return message => {
+    if (callback) {
+      callback(message);
+    }
+    console.log(message);
+  };
+}
 
-async function ensureDirectoryExists(directory) {
+function createErrorLogger(callback) {
+  return message => {
+    if (callback) {
+      callback(message);
+    }
+    console.error(message);
+  };
+}
+
+async function ensureDirectoryExists(directory, log, logError) {
   try {
     await fs.ensureDir(directory);
-    console.log(`✅ Output directory ready: ${directory}`);
+    log(`✅ Output directory ready: ${directory}`);
   } catch (error) {
-    console.error(`❌ Failed to create directory: ${error.message}`);
+    logError(`❌ Failed to create directory: ${error.message}`);
     throw error;
   }
 }
 
-async function scrollPageToBottom(page) {
-  console.log('🔄 Scrolling to load all content...');
+async function scrollPageToBottom(page, log) {
+  log('🔄 Scrolling to load all content...');
   await page.evaluate(async () => {
     await new Promise(resolve => {
       let lastHeight = 0;
@@ -36,7 +50,7 @@ async function scrollPageToBottom(page) {
         if (newHeight === lastHeight) {
           consecutiveStops++;
         } else {
-          consecutiveStops = 0; // Reset if we are still scrolling
+          consecutiveStops = 0;
         }
 
         if (consecutiveStops >= maxConsecutiveStops) {
@@ -46,14 +60,14 @@ async function scrollPageToBottom(page) {
         }
 
         lastHeight = newHeight;
-      }, 500); // Check every 500ms
+      }, 500);
     });
   });
 }
 
-async function extractPromptsAndImages(page) {
-  console.log('🔍 Extracting prompts and images from the chat...');
-  
+async function extractPromptsAndImages(page, log) {
+  log('🔍 Extracting prompts and images from the chat...');
+
   return await page.evaluate(() => {
     const debug_logs = [];
     const results = [];
@@ -134,60 +148,59 @@ async function extractPromptsAndImages(page) {
   });
 }
 
-async function downloadImage(imageData, baseDir = OUTPUT_DIR) {
+async function downloadImage(imageData, log, baseDir = DEFAULT_OUTPUT_DIR) {
   const { url, promptText, folderName, imageNumber } = imageData;
   try {
     const safeFolderName = folderName.replace(/[^\w\s.-]/g, '_').replace(/\s+/g, '_');
     const folderPath = path.join(baseDir, safeFolderName);
-    
+
     await fs.ensureDir(folderPath);
-    
+
     const extension = path.extname(new URL(url).pathname).toLowerCase() || '.jpg';
     // Use the folder name for the image file, adding an index if it's not the first image.
     const filenameBase = folderName.substring(0, 150);
     const filename = imageNumber > 1 ? `${filenameBase}_${imageNumber}${extension}` : `${filenameBase}${extension}`;
     const filePath = path.join(folderPath, filename);
-    
+
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Failed to download ${url}: ${response.statusText}`);
     }
-    
+
     const buffer = await response.arrayBuffer();
     await fs.writeFile(filePath, Buffer.from(buffer));
-    
+
     // Save the prompt as a text file if it doesn't exist
     const promptFilePath = path.join(folderPath, 'prompt.txt');
     if (!fs.existsSync(promptFilePath)) {
       await fs.writeFile(promptFilePath, promptText);
     }
-    
-    console.log(`✅ Downloaded: ${safeFolderName}/${filename}`);
+
+    log(`✅ Downloaded: ${safeFolderName}/${filename}`);
     return true;
   } catch (error) {
-    console.error(`❌ Error downloading ${url}: ${error.message}`);
+    log(`❌ Error downloading ${url}: ${error.message}`);
     return false;
   }
 }
 
-async function main() {
-  // Get URL from command line arguments
-  const args = process.argv.slice(2);
-  if (args.length === 0) {
-    console.error('❌ Please provide a Gemini chat URL as an argument');
-    console.log('Usage: node download-gemini-images.js <gemini-chat-url>');
-    process.exit(1);
-  }
+async function promptForGeminiUrl() {
+  const rl = readline.createInterface({ input, output });
+  const answer = (await rl.question('🔗 Enter the Gemini share URL: ')).trim();
+  rl.close();
+  return answer;
+}
 
-  const geminiUrl = args[0];
-  console.log(`🌐 Opening: ${geminiUrl}`);
+async function runDownloader(geminiUrl, options = {}) {
+  const log = createLogger(options.onLog);
+  const logError = createErrorLogger(options.onError || options.onLog);
+  const outputDir = options.outputDir || DEFAULT_OUTPUT_DIR;
 
-  // Create output directory
-  await ensureDirectoryExists(OUTPUT_DIR);
+  log(`🌐 Opening: ${geminiUrl}`);
+  await ensureDirectoryExists(outputDir, log, logError);
 
-  // Launch browser with more permissive settings
   const browser = await chromium.launch({
-    headless: false, // Set to true for production
+    headless: false,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -204,18 +217,12 @@ async function main() {
       bypassCSP: true,
       permissions: ['clipboard-read', 'clipboard-write']
     });
-    
-    // Add stealth mode to avoid detection
+
     await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'languages', {
-        get: () => ['en-US', 'en'],
-      });
-      Object.defineProperty(navigator, 'plugins', {
-        get: () => [1, 2, 3, 4, 5],
-      });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
     });
-    
-    // Set extra HTTP headers
+
     await context.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
@@ -223,24 +230,17 @@ async function main() {
     });
 
     const page = await context.newPage();
-    
-    // Set up request interception to handle potential permission dialogs
-    await page.route('**/*', route => {
-      if (route.request().resourceType() === 'image') {
-        route.continue();
-      } else {
-        route.continue();
-      }
-    });
 
-    // Navigate to the Gemini chat
-    console.log('🚀 Navigating to the chat...');
+    await page.route('**/*', route => route.continue());
+
+    log('🚀 Navigating to the chat...');
+
     try {
-      await page.goto(geminiUrl, { 
-        waitUntil: 'domcontentloaded', 
-        timeout: 60000 
+      await page.goto(geminiUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
       });
-      
+
       // Check if we're on a login page or if there's an error
       const pageTitle = await page.title();
       const pageUrl = page.url();
@@ -271,13 +271,13 @@ async function main() {
         await page.waitForTimeout(5000);
       } catch (timeoutError) {
         console.error('❌ Timed out waiting for page to load. The page structure might have changed or there is a network issue.');
-        await page.screenshot({ path: path.join(OUTPUT_DIR, 'timeout_error.png') });
+        await page.screenshot({ path: path.join(outputDir, 'timeout_error.png') });
         console.log('📸 A screenshot has been saved to timeout_error.png to help debug.');
         throw timeoutError; // Re-throw the error to stop the script.
       }
 
       // Take a screenshot for debugging
-      await page.screenshot({ path: path.join(OUTPUT_DIR, 'page_screenshot.png') });
+      await page.screenshot({ path: path.join(outputDir, 'page_screenshot.png') });
       console.log('📸 Took a screenshot of the page for debugging: page_screenshot.png');
       
     } catch (error) {
@@ -292,7 +292,7 @@ async function main() {
     
     // Scroll to load all lazy-loaded images
     console.log('🔄 Scrolling to load all content...');
-    await scrollPageToBottom(page);
+    await scrollPageToBottom(page, log);
     
     // A final brief pause to ensure last images are rendered.
     console.log('⏳ Final wait for images to render...');
@@ -306,14 +306,14 @@ async function main() {
         console.log('🔘 Found "Load more" button, clicking...');
         await loadMoreButton.click();
         await page.waitForTimeout(2000);
-        await scrollPageToBottom(page);
+        await scrollPageToBottom(page, log);
       }
     } catch (e) {
       console.log('ℹ️ No "Load more" button found or clickable');
     }
     
     // Extract prompts and images
-    const { results: imageData, debug_logs } = await extractPromptsAndImages(page);
+    const { results: imageData, debug_logs } = await extractPromptsAndImages(page, log);
     console.log('--- Browser-side Debug Logs ---');
     debug_logs.forEach(log => console.log(log));
     console.log('-----------------------------');
@@ -330,7 +330,7 @@ async function main() {
     for (let i = 0; i < imageData.length; i++) {
       const data = imageData[i];
       console.log(`⬇️  Downloading image ${i + 1}/${imageData.length}: ${data.folderName}`);
-      const success = await downloadImage(data);
+      const success = await downloadImage(data, log, outputDir);
       if (success) successCount++;
       
       // Be nice to the server
@@ -339,14 +339,34 @@ async function main() {
     
     console.log(`\n🎉 Download complete!`);
     console.log(`✅ Successfully downloaded ${successCount} out of ${imageData.length} images`);
-    console.log(`📁 Images saved to: ${path.resolve(OUTPUT_DIR)}`);
+    console.log(`📁 Images saved to: ${path.resolve(outputDir)}`);
     
   } catch (error) {
-    console.error('❌ An error occurred:', error);
+    logError('❌ An error occurred: ' + error.message);
   } finally {
     await browser.close();
   }
 }
 
-// Run the main function
-main().catch(console.error);
+async function main() {
+  const args = process.argv.slice(2);
+  let geminiUrl = args[0];
+
+  if (!geminiUrl) {
+    geminiUrl = await promptForGeminiUrl();
+    if (!geminiUrl) {
+      console.error('❌ No Gemini chat URL provided. Exiting.');
+      process.exit(1);
+    }
+  }
+
+  await runDownloader(geminiUrl);
+}
+
+if (require.main === module) {
+  main().catch(console.error);
+}
+
+module.exports = {
+  runDownloader
+};

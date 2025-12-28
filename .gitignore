@@ -1,0 +1,17 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+electron-dist
+
+# Downloaded images
+gemini_images
+
+# Log files
+*.log
+npm-debug.log*
+
+# Other
+package-lock.json
+.DS_Store

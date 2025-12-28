@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Gemini Image Downloader</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <form id="download-form">
+    <div class="field">
+      <span>Gemini Share URL <em>(required)</em></span>
+      <input
+        type="url"
+        name="geminiUrl"
+        placeholder="https://gemini.google.com/share/..."
+        required
+      />
+    </div>
+
+    <div class="field">
+      <span>Custom output directory <em>(optional)</em></span>
+      <div class="folder-row">
+        <input
+          type="text"
+          name="outputDir"
+          placeholder="Select a folder..."
+          readonly
+          id="output-dir"
+        />
+        <button type="button" id="browse-btn">Browse</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <span>Output folder name <em>(default: gemini_images)</em></span>
+      <input
+        type="text"
+        name="outputFolderName"
+        placeholder="gemini_images"
+        id="folder-name"
+      />
+    </div>
+
+    <div class="actions">
+      <button type="submit" id="start-btn">
+        <span class="btn-label">Start Download</span>
+        <span class="btn-spinner"></span>
+      </button>
+      <div id="status-pill" class="idle">Idle</div>
+    </div>
+  </form>
+
+  <div id="log-output"></div>
+  <script src="renderer.js"></script>
+</body>
+</html>
