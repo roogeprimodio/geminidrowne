@@ -191,15 +191,8 @@ async function promptForGeminiUrl() {
   return answer;
 }
 
-async function runDownloader(geminiUrl, options = {}) {
-  const log = createLogger(options.onLog);
-  const logError = createErrorLogger(options.onError || options.onLog);
-  const outputDir = options.outputDir || DEFAULT_OUTPUT_DIR;
-
-  log(`🌐 Opening: ${geminiUrl}`);
-  await ensureDirectoryExists(outputDir, log, logError);
-
-  const browser = await chromium.launch({
+async function launchBrowser(log) {
+  const baseOptions = {
     headless: false,
     args: [
       '--no-sandbox',
@@ -208,7 +201,37 @@ async function runDownloader(geminiUrl, options = {}) {
       '--disable-features=IsolateOrigins,site-per-process',
       '--disable-blink-features=AutomationControlled'
     ]
-  });
+  };
+
+  try {
+    log('🧭 Launching bundled Chromium runtime...');
+    return await chromium.launch(baseOptions);
+  } catch (error) {
+    const missingExecutable =
+      /Executable doesn't exist/i.test(error.message) ||
+      /Failed to launch browser/i.test(error.message);
+
+    if (!missingExecutable) {
+      throw error;
+    }
+
+    log('⚠️ Bundled Chromium not found. Falling back to system Chrome (needs Google Chrome installed).');
+    return await chromium.launch({
+      ...baseOptions,
+      channel: 'chrome'
+    });
+  }
+}
+
+async function runDownloader(geminiUrl, options = {}) {
+  const log = createLogger(options.onLog);
+  const logError = createErrorLogger(options.onError || options.onLog);
+  const outputDir = options.outputDir || DEFAULT_OUTPUT_DIR;
+
+  log(`🌐 Opening: ${geminiUrl}`);
+  await ensureDirectoryExists(outputDir, log, logError);
+
+  const browser = await launchBrowser(log);
 
   try {
     const context = await browser.newContext({

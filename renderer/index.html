@@ -6,51 +6,157 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <form id="download-form">
-    <div class="field">
-      <span>Gemini Share URL <em>(required)</em></span>
-      <input
-        type="url"
-        name="geminiUrl"
-        placeholder="https://gemini.google.com/share/..."
-        required
-      />
-    </div>
-
-    <div class="field">
-      <span>Custom output directory <em>(optional)</em></span>
-      <div class="folder-row">
-        <input
-          type="text"
-          name="outputDir"
-          placeholder="Select a folder..."
-          readonly
-          id="output-dir"
-        />
-        <button type="button" id="browse-btn">Browse</button>
+  <div class="app-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Gemini Ops Suite</p>
+        <h1>Automate prompt runs or download finished chats</h1>
+        <p class="lede">Pick a workspace: start building the Prompt Automation Studio, or jump straight into the downloader that’s already battle-tested.</p>
       </div>
-    </div>
+    </header>
 
-    <div class="field">
-      <span>Output folder name <em>(default: gemini_images)</em></span>
-      <input
-        type="text"
-        name="outputFolderName"
-        placeholder="gemini_images"
-        id="folder-name"
-      />
-    </div>
+    <main>
+      <section class="view active" data-view="home">
+        <div class="card-grid">
+          <article class="card">
+            <h2>Automation Studio</h2>
+            <p>Design multi-script prompt runs with batching, numbering memory, and Gemini orchestration.</p>
+            <button class="primary" data-nav="automation">Go to automation</button>
+          </article>
+          <article class="card">
+            <h2>Image Downloader</h2>
+            <p>Paste a Gemini share link and pull every rendered image + prompt metadata to disk.</p>
+            <button class="primary" data-nav="downloader">Open downloader</button>
+          </article>
+        </div>
+      </section>
 
-    <div class="actions">
-      <button type="submit" id="start-btn">
-        <span class="btn-label">Start Download</span>
-        <span class="btn-spinner"></span>
-      </button>
-      <div id="status-pill" class="idle">Idle</div>
-    </div>
-  </form>
+      <section class="view full-bleed" data-view="automation">
+        <div class="automation-shell">
+          <aside class="automation-nav">
+            <div class="nav-header">
+              <p class="eyebrow">Automation Studio</p>
+              <h2>Workflow builder</h2>
+            </div>
 
-  <div id="log-output"></div>
+            <div class="add-section">
+              <label for="section-name-input">Create a section</label>
+              <div class="input-row">
+                <input type="text" id="section-name-input" placeholder="e.g. Script Intake">
+                <button id="add-section-btn" class="primary pill">+ Section</button>
+              </div>
+            </div>
+
+            <div id="section-list" class="section-list">
+              <p class="empty-state">No sections yet. Add one to start organizing scripts.</p>
+            </div>
+
+            <button class="ghost full" data-nav="home">← Back to menu</button>
+          </aside>
+
+          <div class="automation-content">
+            <header class="automation-header">
+              <div>
+                <p class="eyebrow">Design surface</p>
+                <h2>Manage batches, subsections, and scripts</h2>
+                <p class="lede">Define each workflow section, add togglable subsections, and capture the script text per item before wiring automation.</p>
+              </div>
+            </header>
+
+            <section class="automation-actions">
+              <div class="action-row">
+                <div class="action-buttons">
+                  <button class="primary" id="run-chatgpt-btn">Run ChatGPT batch</button>
+                  <button class="primary outline" id="run-gemini-btn">Run Gemini replay</button>
+                </div>
+                <div class="automation-status">
+                  <span>Status</span>
+                  <div id="automation-status-pill" class="status-pill idle">Idle</div>
+                </div>
+              </div>
+              <p class="action-note">
+                Visible browser automation only. Stay signed into ChatGPT and Gemini in the windows that open so the runs can proceed without violating privacy policies.
+              </p>
+              <div class="action-log" id="automation-log">
+                <p class="empty-state">Automation logs will appear here.</p>
+              </div>
+            </section>
+
+            <div class="script-editor" id="script-editor">
+              <div class="editor-header">
+                <div>
+                  <p class="eyebrow" id="editor-breadcrumb">No script selected</p>
+                  <h2 id="editor-title">Select a script to edit</h2>
+                </div>
+              </div>
+              <textarea id="script-input" placeholder="Select a script slot to start writing..." disabled></textarea>
+              <div class="editor-footer">
+                <button class="ghost" id="clear-script-btn" disabled>Clear text</button>
+                <span id="autosave-indicator">Waiting for input...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" data-view="downloader">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Image Downloader</p>
+            <h2>Extract everything from a Gemini share</h2>
+            <p class="lede">Point us at a public chat, choose where to save, and let Playwright capture the assets.</p>
+          </div>
+          <button class="ghost" data-nav="home">Back to menu</button>
+        </div>
+
+        <form id="download-form">
+          <div class="field">
+            <span>Gemini Share URL <em>(required)</em></span>
+            <input
+              type="url"
+              name="geminiUrl"
+              placeholder="https://gemini.google.com/share/..."
+              required
+            />
+          </div>
+
+          <div class="field">
+            <span>Custom output directory <em>(optional)</em></span>
+            <div class="folder-row">
+              <input
+                type="text"
+                name="outputDir"
+                placeholder="Select a folder..."
+                readonly
+                id="output-dir"
+              />
+              <button type="button" id="browse-btn">Browse</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <span>Output folder name <em>(default: gemini_images)</em></span>
+            <input
+              type="text"
+              name="outputFolderName"
+              placeholder="gemini_images"
+              id="folder-name"
+            />
+          </div>
+
+          <div class="actions">
+            <button type="submit" id="start-btn">
+              <span class="btn-label">Start Download</span>
+              <span class="btn-spinner"></span>
+            </button>
+            <div id="status-pill" class="idle">Idle</div>
+          </div>
+        </form>
+
+        <div id="log-output"></div>
+      </section>
+    </main>
+  </div>
   <script src="renderer.js"></script>
 </body>
 </html>
