@@ -4,6 +4,10 @@
   <meta charset="UTF-8">
   <title>Gemini Image Downloader</title>
   <link rel="stylesheet" href="styles.css">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
   <div class="app-shell">
@@ -61,6 +65,7 @@
                 <h2>Manage batches, subsections, and scripts</h2>
                 <p class="lede">Define each workflow section, add togglable subsections, and capture the script text per item before wiring automation.</p>
               </div>
+              <button class="ghost drawer-toggle" id="drawer-toggle-btn"><i data-lucide="menu"></i></button>
             </header>
 
             <section class="automation-actions">
@@ -68,6 +73,7 @@
                 <div class="action-buttons">
                   <button class="primary" id="run-chatgpt-btn">Run ChatGPT batch</button>
                   <button class="primary outline" id="run-gemini-btn">Run Gemini replay</button>
+                  <button class="ghost" id="view-output-btn">📄 View Output</button>
                 </div>
                 <div class="automation-status">
                   <span>Status</span>
@@ -78,7 +84,55 @@
                 Visible browser automation only. Stay signed into ChatGPT and Gemini in the windows that open so the runs can proceed without violating privacy policies.
               </p>
               <div class="action-log" id="automation-log">
-                <p class="empty-state">Automation logs will appear here.</p>
+                <div class="log-header">
+                  <span>Automation Logs</span>
+                  <button class="ghost log-toggle" id="log-toggle-btn" onclick="toggleLogSize()">▲ Expand</button>
+                </div>
+                <div class="log-tabs">
+                  <button class="log-tab active" data-tab="all" onclick="switchLogTab('all')">All Logs</button>
+                  <button class="log-tab" data-tab="clean" onclick="switchLogTab('clean')">Clean Logs</button>
+                </div>
+                <div class="log-content">
+                  <div class="log-view active" id="log-all">
+                    <p class="empty-state">All logs will appear here.</p>
+                  </div>
+                  <div class="log-view" id="log-clean">
+                    <p class="empty-state">Clean logs will appear here.</p>
+                  </div>
+                </div>
+              </div>
+              
+              <div class="chat-extraction" id="chat-extraction" style="display: none;">
+                <div class="extraction-header">
+                  <div>
+                    <p class="eyebrow">🎉 Batch completed!</p>
+                    <h3>Extract prompts from ChatGPT chat</h3>
+                    <p class="lede">Provide the ChatGPT chat link to extract all prompts and save them as new subsections.</p>
+                  </div>
+                </div>
+                
+                <div class="extraction-form">
+                  <div class="field">
+                    <span>ChatGPT Chat URL <em>(required)</em></span>
+                    <div class="url-row">
+                      <input
+                        type="url"
+                        id="chat-url-input"
+                        placeholder="https://chatgpt.com/share/..."
+                        required
+                      />
+                      <button type="button" id="extract-prompts-btn" class="primary">
+                        <span class="btn-label">Extract Prompts</span>
+                        <span class="btn-spinner"></span>
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <div class="extraction-status" id="extraction-status">
+                    <span>Status</span>
+                    <div id="extraction-status-pill" class="status-pill idle">Ready</div>
+                  </div>
+                </div>
               </div>
             </section>
 

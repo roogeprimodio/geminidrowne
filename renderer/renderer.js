@@ -38,6 +38,12 @@ const automationLog = document.getElementById('automation-log');
 const automationStatusPill = document.getElementById('automation-status-pill');
 const runChatgptBtn = document.getElementById('run-chatgpt-btn');
 const runGeminiBtn = document.getElementById('run-gemini-btn');
+const viewOutputBtn = document.getElementById('view-output-btn');
+const drawerToggleBtn = document.getElementById('drawer-toggle-btn');
+const chatExtraction = document.getElementById('chat-extraction');
+const chatUrlInput = document.getElementById('chat-url-input');
+const extractPromptsBtn = document.getElementById('extract-prompts-btn');
+const extractionStatusPill = document.getElementById('extraction-status-pill');
 
 let sectionsState = [];
 let activeSelection = null; // { sectionId, subsectionId }
@@ -48,6 +54,7 @@ let automationState = {
   nextBatchNumber: 1
 };
 let pendingStateSave;
+let drawerOpen = true;
 
 function createId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -90,11 +97,29 @@ function renderSections() {
     meta.appendChild(label);
     meta.appendChild(title);
 
+    const controls = document.createElement('div');
+    controls.className = 'section-controls';
+    
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'delete-section-btn';
+    deleteBtn.type = 'button';
+    deleteBtn.innerHTML = '<i data-lucide="trash-2"></i>';
+    deleteBtn.title = 'Delete section';
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirm(`Are you sure you want to delete "${section.name}" and all its scripts?`)) {
+        deleteSection(section.id);
+      }
+    });
+
+    controls.appendChild(deleteBtn);
+
     const caret = document.createElement('span');
     caret.className = 'caret-btn';
-    caret.textContent = '▾';
+    caret.innerHTML = '<i data-lucide="chevron-down"></i>';
 
     header.appendChild(meta);
+    header.appendChild(controls);
     header.appendChild(caret);
 
     const body = document.createElement('div');
@@ -188,6 +213,11 @@ function renderSections() {
     block.appendChild(body);
     sectionList.appendChild(block);
   });
+
+  // Reinitialize Lucide icons after rendering
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
 }
 
 function addSection(name) {
@@ -198,6 +228,19 @@ function addSection(name) {
     subsections: []
   };
   sectionsState.push(section);
+  queueStateSave();
+  renderSections();
+}
+
+function deleteSection(sectionId) {
+  sectionsState = sectionsState.filter(section => section.id !== sectionId);
+  
+  // Clear active selection if it was in the deleted section
+  if (activeSelection && activeSelection.sectionId === sectionId) {
+    activeSelection = null;
+    updateEditorState();
+  }
+  
   queueStateSave();
   renderSections();
 }
@@ -352,14 +395,521 @@ async function triggerAutomation(stage) {
         ? '▶️ Starting ChatGPT batch...'
         : '▶️ Starting Gemini replay...'
     );
+    
+    // Get scripts for validation
+    const scripts = getFlattenedScripts();
+    
+    if (stage === 'chatgpt' && scripts.length > 0) {
+      // Run validation before starting
+      const validation = validateScriptsLocally(scripts);
+      
+      let shouldContinue = true;
+      
+      // Show validation popup if there are issues
+      if (validation.duplicates.length > 0 || validation.empty.length > 0) {
+        shouldContinue = await showValidationPopup(validation);
+      }
+      
+      if (!shouldContinue) {
+        appendAutomationLog('❌ Automation cancelled by user');
+        return;
+      }
+    }
+    
     setAutomationButtonsDisabled(true);
-    await window.electronAPI.runAutomation(stage);
+    const result = await window.electronAPI.runAutomation(stage);
+    
+    // Handle ChatGPT batch completion
+    if (stage === 'chatgpt' && result && result.completed) {
+      appendAutomationLog('🎉 ChatGPT batch completed successfully!');
+      appendAutomationLog(`📊 Processed ${result.scriptsProcessed || 'unknown'} scripts`);
+      showChatExtraction();
+    } else if (stage === 'chatgpt') {
+      appendAutomationLog('⚠️ ChatGPT batch completed but result state unclear');
+    }
   } catch (error) {
     appendAutomationLog(error.message || 'Automation failed', Date.now(), true);
     automationStatusPill.textContent = 'Error';
     automationStatusPill.className = 'status-pill error';
     setAutomationButtonsDisabled(false);
   }
+}
+
+function getFlattenedScripts() {
+  const scripts = [];
+  
+  sectionsState.forEach((section, sectionIndex) => {
+    section.subsections.forEach((subsection, subsectionIndex) => {
+      if (subsection.script && subsection.script.trim().length > 0) {
+        scripts.push({
+          scriptName: subsection.name,
+          script: subsection.script,
+          sectionName: section.name,
+          subsectionName: subsection.name,
+          sectionIndex: sectionIndex,
+          subsectionIndex: subsectionIndex,
+          batchNumber: scripts.length + 1
+        });
+      }
+    });
+  });
+  
+  return scripts;
+}
+
+// Local validation function (simplified version)
+function validateScriptsLocally(scripts) {
+  const validation = {
+    duplicates: [],
+    empty: [],
+    total: scripts.length,
+    valid: 0
+  };
+  
+  // Check for empty scripts
+  scripts.forEach((script, i) => {
+    if (!script.script || script.script.trim().length === 0) {
+      validation.empty.push({
+        scriptName: script.scriptName,
+        index: i
+      });
+    }
+  });
+  
+  // Simple duplicate check (exact match for now)
+  for (let i = 0; i < scripts.length; i++) {
+    for (let j = i + 1; j < scripts.length; j++) {
+      const script1 = scripts[i];
+      const script2 = scripts[j];
+      
+      if (script1.script && script2.script && 
+          script1.script.trim().toLowerCase() === script2.script.trim().toLowerCase()) {
+        validation.duplicates.push({
+          scriptName: script2.scriptName,
+          originalScriptName: script1.scriptName,
+          percentage: 100,
+          index: j,
+          originalIndex: i
+        });
+      }
+    }
+  }
+  
+  validation.valid = validation.total - validation.empty.length;
+  return validation;
+}
+
+// Show validation popup
+async function showValidationPopup(validation) {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+    `;
+    
+    const content = document.createElement('div');
+    content.style.cssText = `
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 500px;
+      max-height: 70vh;
+      overflow-y: auto;
+    `;
+    
+    let html = `
+      <h3 style="margin: 0 0 16px 0; color: var(--text);">🔍 Script Validation Results</h3>
+      <div style="margin-bottom: 20px;">
+        <p style="margin: 4px 0; color: var(--text);">Total scripts: <strong>${validation.total}</strong></p>
+        <p style="margin: 4px 0; color: var(--text);">Valid scripts: <strong>${validation.valid}</strong></p>
+        <p style="margin: 4px 0; color: var(--error);">Empty scripts: <strong>${validation.empty.length}</strong></p>
+        <p style="margin: 4px 0; color: var(--warning);">Potential duplicates: <strong>${validation.duplicates.length}</strong></p>
+      </div>
+    `;
+    
+    if (validation.empty.length > 0) {
+      html += `
+        <div style="margin-bottom: 16px;">
+          <h4 style="margin: 0 0 8px 0; color: var(--error);">Empty Scripts:</h4>
+          ${validation.empty.map(e => `<p style="margin: 4px 0; color: var(--text-muted);">• ${e.scriptName}</p>`).join('')}
+        </div>
+      `;
+    }
+    
+    if (validation.duplicates.length > 0) {
+      html += `
+        <div style="margin-bottom: 16px;">
+          <h4 style="margin: 0 0 8px 0; color: var(--warning);">Potential Duplicates:</h4>
+          ${validation.duplicates.map(d => `<p style="margin: 4px 0; color: var(--text-muted);">• "${d.scriptName}" is ${d.percentage}% similar to "${d.originalScriptName}"</p>`).join('')}
+        </div>
+      `;
+    }
+    
+    html += `
+      <div style="display: flex; gap: 12px; margin-top: 20px;">
+        <button id="continue-btn" style="flex: 1; padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer;">Continue Anyway</button>
+        <button id="cancel-btn" style="flex: 1; padding: 8px 16px; background: var(--error); color: white; border: none; border-radius: 6px; cursor: pointer;">Cancel</button>
+      </div>
+    `;
+    
+    content.innerHTML = html;
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    
+    document.getElementById('continue-btn').onclick = () => {
+      document.body.removeChild(modal);
+      resolve(true);
+    };
+    
+    document.getElementById('cancel-btn').onclick = () => {
+      document.body.removeChild(modal);
+      resolve(false);
+    };
+    
+    // Close on outside click
+    modal.onclick = (e) => {
+      if (e.target === modal) {
+        document.body.removeChild(modal);
+        resolve(false);
+      }
+    };
+  });
+}
+
+// Toggle log size function
+function toggleLogSize() {
+  const automationLogElement = document.getElementById('automation-log');
+  if (!automationLogElement) return;
+  
+  automationLogElement.classList.toggle('expanded');
+  
+  // Update button text if exists
+  const toggleBtn = document.getElementById('log-toggle-btn');
+  if (toggleBtn) {
+    const isExpanded = automationLogElement.classList.contains('expanded');
+    toggleBtn.textContent = isExpanded ? '▼ Minimize' : '▲ Expand';
+  }
+}
+
+// Switch log tab function
+function switchLogTab(tabName) {
+  // Update tab buttons
+  const tabs = document.querySelectorAll('.log-tab');
+  tabs.forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.tab === tabName);
+  });
+  
+  // Update log views
+  const views = document.querySelectorAll('.log-view');
+  views.forEach(view => {
+    view.classList.toggle('active', view.id === `log-${tabName}`);
+  });
+}
+
+// Enhanced log append with tab support
+function appendAutomationLog(message, timestamp = Date.now(), isError = false) {
+  const allLogsView = document.getElementById('log-all');
+  const cleanLogsView = document.getElementById('log-clean');
+  
+  // Remove empty state if exists
+  if (allLogsView && allLogsView.querySelector('.empty-state')) {
+    allLogsView.innerHTML = '';
+  }
+  if (cleanLogsView && cleanLogsView.querySelector('.empty-state')) {
+    cleanLogsView.innerHTML = '';
+  }
+  
+  // Create log entry
+  const logEntry = createLogEntry(message, timestamp, isError);
+  
+  // Add to all logs
+  if (allLogsView) {
+    allLogsView.appendChild(logEntry.cloneNode(true));
+    allLogsView.scrollTop = allLogsView.scrollHeight;
+  }
+  
+  // Add to clean logs (filtered)
+  if (cleanLogsView && isCleanLogMessage(message)) {
+    cleanLogsView.appendChild(logEntry);
+    cleanLogsView.scrollTop = cleanLogsView.scrollHeight;
+  }
+}
+
+// Create log entry element
+function createLogEntry(message, timestamp, isError) {
+  const row = document.createElement('div');
+  row.className = 'automation-log-row';
+  
+  // Add log type classes
+  if (isError) {
+    row.classList.add('error');
+  } else if (message.includes('✅') || message.includes('🎉')) {
+    row.classList.add('success');
+  } else if (message.includes('⚠️') || message.includes('⏭️')) {
+    row.classList.add('warning');
+  } else if (message.includes('▶️') || message.includes('🔄') || message.includes('📊')) {
+    row.classList.add('info');
+  }
+  
+  const time = new Date(timestamp).toLocaleTimeString();
+  row.innerHTML = `<span class="log-time">${time}</span><span class="log-message">${message}</span>`;
+  
+  return row;
+}
+
+// Determine if message should appear in clean logs
+function isCleanLogMessage(message) {
+  // Include important messages in clean logs
+  const cleanPatterns = [
+    /✅/, // Success
+    /❌/, // Errors
+    /⚠️/, // Warnings
+    /⏭️/, // Skips
+    /🎉/, // Completion
+    /▶️.*Starting/, // Start messages
+    /📊.*Processing/, // Processing messages
+    /🔄.*Processing/, // Processing messages
+    /📊.*Found.*scripts/, // Script counts
+    /✅.*processed.*scripts/ // Completion counts
+  ];
+  
+  return cleanPatterns.some(pattern => pattern.test(message));
+}
+
+// Enhanced error handling
+function handleAutomationError(error, context = '') {
+  console.error(`Automation Error ${context}:`, error);
+  
+  const errorMessage = error?.message || error || 'Unknown error occurred';
+  
+  appendAutomationLog(`❌ Error${context ? ` in ${context}` : ''}: ${errorMessage}`, Date.now(), true);
+  
+  // Update UI status
+  if (automationStatusPill) {
+    automationStatusPill.textContent = 'Error';
+    automationStatusPill.className = 'status-pill error';
+  }
+  
+  setAutomationButtonsDisabled(false);
+}
+
+// Retry mechanism for failed operations
+async function retryOperation(operation, maxRetries = 3, delay = 1000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      
+      appendAutomationLog(`⚠️ Attempt ${attempt} failed, retrying in ${delay}ms...`, Date.now(), false);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      delay *= 2; // Exponential backoff
+    }
+  }
+}
+
+function showChatExtraction() {
+  if (chatExtraction) {
+    chatExtraction.style.display = 'block';
+    appendAutomationLog('🔗 Chat extraction UI is now available. Paste your ChatGPT chat link to extract prompts.');
+  }
+}
+
+function hideChatExtraction() {
+  if (chatExtraction) {
+    chatExtraction.style.display = 'none';
+  }
+}
+
+function setExtractionStatus(status, text = status) {
+  if (!extractionStatusPill) return;
+  extractionStatusPill.textContent = text;
+  extractionStatusPill.className = `status-pill ${status}`;
+}
+
+async function handleExtractPrompts() {
+  if (!window.electronAPI?.extractPromptsFromChat || !chatUrlInput) return;
+  
+  const chatUrl = chatUrlInput.value.trim();
+  if (!chatUrl) {
+    appendAutomationLog('❌ Please enter a ChatGPT chat URL.', Date.now(), true);
+    return;
+  }
+
+  try {
+    setExtractionStatus('running', 'Extracting...');
+    if (extractPromptsBtn) {
+      extractPromptsBtn.disabled = true;
+      extractPromptsBtn.querySelector('.btn-label').textContent = 'Extracting...';
+    }
+
+    appendAutomationLog(`🔗 Extracting prompts from: ${chatUrl}`);
+    
+    const result = await window.electronAPI.extractPromptsFromChat(chatUrl);
+    
+    if (result.success) {
+      appendAutomationLog(`✅ Successfully extracted ${result.promptsCount} prompts and saved as ${result.subsectionsCount} new subsections.`);
+      setExtractionStatus('done', 'Completed');
+      hideChatExtraction();
+      chatUrlInput.value = '';
+    }
+    
+  } catch (error) {
+    appendAutomationLog(error.message || 'Prompt extraction failed', Date.now(), true);
+    setExtractionStatus('error', 'Failed');
+  } finally {
+    if (extractPromptsBtn) {
+      extractPromptsBtn.disabled = false;
+      extractPromptsBtn.querySelector('.btn-label').textContent = 'Extract Prompts';
+    }
+  }
+}
+
+function toggleDrawer() {
+  drawerOpen = !drawerOpen;
+  const automationShell = document.querySelector('.automation-shell');
+  if (automationShell) {
+    automationShell.classList.toggle('drawer-closed', !drawerOpen);
+  }
+  
+  // Update toggle icon
+  if (drawerToggleBtn) {
+    const icon = drawerToggleBtn.querySelector('i');
+    if (icon) {
+      icon.setAttribute('data-lucide', drawerOpen ? 'menu' : 'x');
+      if (window.lucide) {
+        window.lucide.createIcons();
+      }
+    }
+  }
+}
+
+function handleViewOutput() {
+  // Create prompts-only output content for Gemini feeding
+  let outputContent = '';
+  let globalPromptCounter = 1;
+  
+  if (automationState.history && automationState.history.length > 0) {
+    outputContent += `# Gemini Prompts\n\n`;
+    outputContent += `Generated: ${new Date().toLocaleString()}\n`;
+    outputContent += `Total Scripts: ${automationState.history.length}\n\n`;
+    
+    automationState.history.forEach((entry, scriptIndex) => {
+      if (entry.response && entry.response.trim().length > 0) {
+        // Extract prompts from the ChatGPT response
+        const prompts = extractPromptsFromResponse(entry.response);
+        
+        prompts.forEach((prompt) => {
+          // Use continuous numbering: 1.1, 1.2, 2.1, 2.2, etc.
+          const promptNumber = `${scriptIndex + 1}.${globalPromptCounter}`;
+          outputContent += `${promptNumber} ${prompt}\n\n`;
+          globalPromptCounter++;
+        });
+      }
+    });
+    
+    if (outputContent.trim() === `# Gemini Prompts\n\nGenerated: ${new Date().toLocaleString()}\nTotal Scripts: ${automationState.history.length}\n\n`) {
+      outputContent += `No prompts found in ChatGPT responses.\n\nPlease check the responses and ensure they contain properly formatted prompts.`;
+    }
+  } else {
+    outputContent = `# No Prompts Available\n\nNo ChatGPT responses have been generated yet. Run the ChatGPT batch first.`;
+  }
+  
+  // Create a blob and download the file
+  const blob = new Blob([outputContent], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `gemini-prompts-${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  
+  appendAutomationLog('📄 Gemini prompts file downloaded successfully');
+}
+
+function extractPromptsFromResponse(response) {
+  const prompts = [];
+  
+  // Split response by code blocks (``` ) to get complete prompts
+  const codeBlocks = response.split(/```/);
+  
+  for (let i = 0; i < codeBlocks.length; i++) {
+    const block = codeBlocks[i].trim();
+    
+    // Skip empty blocks and language identifiers
+    if (block.length === 0 || block === 'markdown' || block === 'text') {
+      continue;
+    }
+    
+    // Only extract prompts that start with 1.x, 2.x, 3.x, etc. (script numbering)
+    // Skip ChatGPT's internal numbering (11.x, 12.x, 51.x, etc.)
+    if (/^[1-9]\.\d+\s/.test(block) && !/^[1][1-9]\./.test(block)) {
+      prompts.push(block);
+    }
+    // Also check for script content without numbering
+    else if (block.includes('🎥 Video Title') || 
+             block.includes('✅ 45-Second YouTube Shorts Script') ||
+             block.includes('[SEGMENT') ||
+             block.includes('🎙️ News Narration:') ||
+             block.includes('🖼️ Image to Display:') ||
+             block.includes('🎬 Scene Description:') ||
+             block.includes('📝 Script:')) {
+      prompts.push(block);
+    }
+  }
+  
+  // If no code blocks found, try to extract numbered lines from the entire response
+  if (prompts.length === 0) {
+    const lines = response.split('\n');
+    let currentPrompt = '';
+    let scriptIndex = 1;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      // Only start new prompt if line begins with script numbering (1.x, 2.x, etc.)
+      // Skip ChatGPT's internal numbering
+      if (/^[1-9]\.\d+\s/.test(line) && !/^[1][1-9]\./.test(line)) {
+        // Save previous prompt if exists
+        if (currentPrompt.trim().length > 0) {
+          prompts.push(currentPrompt.trim());
+        }
+        currentPrompt = line;
+        scriptIndex++;
+      }
+      // Continue adding to current prompt
+      else if (currentPrompt.length > 0 && line.length > 0) {
+        currentPrompt += '\n' + line;
+        
+        // End prompt if we hit a major separator
+        if (line.includes('---') || line.includes('===') || line.includes('###')) {
+          prompts.push(currentPrompt.trim());
+          currentPrompt = '';
+        }
+      }
+    }
+    
+    // Add the last prompt
+    if (currentPrompt.trim().length > 0) {
+      prompts.push(currentPrompt.trim());
+    }
+  }
+  
+  return prompts;
 }
 
 if (addSectionBtn) {
@@ -476,6 +1026,26 @@ if (runGeminiBtn) {
   runGeminiBtn.addEventListener('click', () => triggerAutomation('gemini'));
 }
 
+if (viewOutputBtn) {
+  viewOutputBtn.addEventListener('click', handleViewOutput);
+}
+
+if (drawerToggleBtn) {
+  drawerToggleBtn.addEventListener('click', toggleDrawer);
+}
+
+if (extractPromptsBtn) {
+  extractPromptsBtn.addEventListener('click', handleExtractPrompts);
+}
+
+if (chatUrlInput) {
+  chatUrlInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      handleExtractPrompts();
+    }
+  });
+}
+
 if (window.electronAPI) {
   window.electronAPI.onAutomationState(state => applyAutomationState(state));
   window.electronAPI.onAutomationLog(payload =>
@@ -486,3 +1056,23 @@ if (window.electronAPI) {
 
 hydrateAutomationState();
 showView('home');
+
+// Initialize Lucide icons after DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
+});
+
+// Fallback initialization if DOMContentLoaded already fired
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
+  });
+} else {
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
+}

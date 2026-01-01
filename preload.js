@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAutomationState: () => ipcRenderer.invoke('automation-state:get'),
   updateAutomationState: state => ipcRenderer.invoke('automation-state:update', state),
   runAutomation: stage => ipcRenderer.invoke('automation-run', { stage }),
+  extractPromptsFromChat: chatUrl => ipcRenderer.invoke('extract-prompts-from-chat', { chatUrl }),
   onAutomationState: callback =>
     ipcRenderer.on('automation-state', (_, state) => callback(state)),
   onAutomationLog: callback =>

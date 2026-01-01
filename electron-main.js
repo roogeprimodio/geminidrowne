@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { runDownloader } = require('./download-gemini-images.js');
-const { runChatGPTBatch, runGeminiReplay } = require('./automation-runner');
+const { runChatGPTBatch, runGeminiReplay, extractPromptsFromChat, saveExtractedPrompts } = require('./automation-runner');
 const { loadAutomationState, saveAutomationState, getDefaultState } = require('./automation-store');
 
 let mainWindow;
@@ -132,6 +132,8 @@ ipcMain.handle('automation-run', async (event, { stage }) => {
 
   const scripts = flattenScripts().filter(item => item.script && item.script.trim().length > 0);
 
+  log(`📊 Found ${flattenScripts().length} total scripts, ${scripts.length} with content`);
+  
   if (scripts.length === 0) {
     throw new Error('Please add at least one script with content before running automation.');
   }
@@ -141,72 +143,82 @@ ipcMain.handle('automation-run', async (event, { stage }) => {
 
   try {
     if (stage === 'chatgpt') {
-      const seenScripts = new Map();
-      automationState.history.forEach(entry => {
-        seenScripts.set((entry.script || '').trim(), entry.batchNumber);
-      });
-
-      const preparedScripts = [];
-      let nextBatch = automationState.nextBatchNumber || 1;
-      scripts.forEach(script => {
-        const trimmed = script.script.trim();
-        if (seenScripts.has(trimmed)) {
-          throw new Error(`⚠️ Script "${script.scriptName}" matches Batch ${seenScripts.get(trimmed)}. Please update the text before rerunning.`);
-        }
-        const payload = {
-          ...script,
-          batchNumber: nextBatch,
-          batchLabel: `Batch ${nextBatch}`,
-          script: `Batch ${nextBatch} script:\n${trimmed}`
-        };
-        preparedScripts.push(payload);
-        nextBatch += 1;
-      });
-
-      await runChatGPTBatch({
-        scripts: preparedScripts,
+      // Use scripts as-is, no batching or duplicate checking
+      const result = await runChatGPTBatch({
+        scripts: scripts,
         log,
         onResult: async result => {
           const match = findSubsection(result.sectionId, result.subsectionId);
           if (!match) return;
           match.subsection.chatgptResponse = result.response;
-          match.subsection.batchNumber = result.batchNumber;
-          match.subsection.batchLabel = result.batchLabel;
           automationState.history.push({
             timestamp: Date.now(),
             sectionId: result.sectionId,
             subsectionId: result.subsectionId,
-            batchNumber: result.batchNumber,
-            batchLabel: result.batchLabel,
             script: match.subsection.script || '',
             response: result.response
           });
           saveAndBroadcastAutomationState();
         }
       });
-
-      automationState.nextBatchNumber = preparedScripts[preparedScripts.length - 1].batchNumber + 1;
-      saveAndBroadcastAutomationState();
+      
       log('💾 ChatGPT outputs saved to disk.');
+      
+      // Handle completion properly
+      if (result && result.completed) {
+        log(`🎉 ChatGPT batch completed successfully! Processed ${result.scriptsProcessed} scripts.`);
+      }
+      
+      // Return the result to the renderer
+      return result;
     } else if (stage === 'gemini') {
-      const prompts = [];
-      automationState.sections.forEach(section => {
-        section.subsections
-          .filter(sub => sub.chatgptResponse && sub.batchNumber)
-          .sort((a, b) => (a.batchNumber || 0) - (b.batchNumber || 0))
-          .forEach(sub => {
-            prompts.push({
-              response: sub.chatgptResponse,
-              batchLabel: sub.batchLabel || `Batch ${sub.batchNumber}`
-            });
-          });
-      });
-
+      // Read prompts from any available output file
+      const fs = require('fs');
+      const path = require('path');
+      
+      // Use the app's working directory (where electron-main.js is located)
+      const appDir = __dirname;
+      
+      // Look for both gemini-prompts and chatgpt-output files
+      const geminiFiles = fs.readdirSync(appDir).filter(f => f.startsWith('gemini-prompts-') && f.endsWith('.md'));
+      const chatgptFiles = fs.readdirSync(appDir).filter(f => f.includes('chatgpt-output') && f.endsWith('.md'));
+      
+      // Combine all files and get the most recent one
+      const allFiles = [...geminiFiles, ...chatgptFiles];
+      
+      log(`🔍 Searching for prompt files in: ${appDir}`);
+      
+      if (allFiles.length === 0) {
+        throw new Error('No prompt files found. Please run ChatGPT batch first to generate prompts.');
+      }
+      
+      // Get the most recent file by modification time
+      let latestFile = allFiles[0];
+      let latestTime = fs.statSync(path.join(appDir, latestFile)).mtime;
+      
+      for (const file of allFiles) {
+        const fileTime = fs.statSync(path.join(appDir, file)).mtime;
+        if (fileTime > latestTime) {
+          latestFile = file;
+          latestTime = fileTime;
+        }
+      }
+      
+      const fullPath = path.join(appDir, latestFile);
+      log(`📄 Reading prompts from: ${fullPath}`);
+      
+      const fileContent = fs.readFileSync(fullPath, 'utf8');
+      const prompts = parseGeminiPromptsFile(fileContent);
+      
       if (prompts.length === 0) {
-        throw new Error('No ChatGPT outputs found. Run the ChatGPT batch first.');
+        throw new Error('No prompts found in the prompts file. The file may not contain properly formatted prompts.');
       }
 
-      await runGeminiReplay({ prompts, log });
+      log(`🎯 Found ${prompts.length} prompts for Gemini processing`);
+      const result = await runGeminiReplay({ prompts, log });
+      
+      // Return the result to the renderer
+      return result;
     } else {
       throw new Error('Unknown automation stage.');
     }
@@ -221,6 +233,65 @@ ipcMain.handle('select-folder', async () => {
     properties: ['openDirectory']
   });
   return result.filePaths[0] || null;
+});
+
+ipcMain.handle('extract-prompts-from-chat', async (event, { chatUrl }) => {
+  if (automationBusy) {
+    throw new Error('Another automation run is already in progress.');
+  }
+
+  if (!chatUrl || !chatUrl.trim()) {
+    throw new Error('Please provide a valid ChatGPT chat URL.');
+  }
+
+  const sender = event.sender;
+  const log = createAutomationLogger(sender);
+
+  automationBusy = true;
+
+  try {
+    log('🔗 Starting prompt extraction from ChatGPT chat...');
+    
+    // Extract prompts from the chat
+    const extractedPrompts = await extractPromptsFromChat(chatUrl.trim(), log);
+    
+    if (extractedPrompts.length === 0) {
+      throw new Error('No prompts found in the provided chat.');
+    }
+
+    // Save as new subsections
+    const newSubsections = await saveExtractedPrompts(extractedPrompts, log);
+    
+    // Add to automation state
+    if (automationState.sections.length === 0) {
+      // Create a new section if none exists
+      automationState.sections.push({
+        id: 'extracted-' + Date.now(),
+        name: 'Extracted Prompts',
+        subsections: newSubsections
+      });
+    } else {
+      // Add to the first existing section
+      automationState.sections[0].subsections.push(...newSubsections);
+    }
+
+    saveAndBroadcastAutomationState();
+    
+    log(`✅ Successfully extracted and saved ${extractedPrompts.length} prompts as new subsections.`);
+    
+    return {
+      success: true,
+      promptsCount: extractedPrompts.length,
+      subsectionsCount: newSubsections.length,
+      prompts: extractedPrompts
+    };
+    
+  } catch (error) {
+    log(`❌ Prompt extraction failed: ${error.message}`);
+    throw error;
+  } finally {
+    automationBusy = false;
+  }
 });
 
 ipcMain.handle('start-download', async (event, { url, outputDir, outputFolderName }) => {
@@ -256,3 +327,52 @@ ipcMain.handle('start-download', async (event, { url, outputDir, outputFolderNam
     webContents.send('download-complete');
   }
 });
+
+function parseGeminiPromptsFile(fileContent) {
+  const prompts = [];
+  const lines = fileContent.split('\n');
+  let currentPrompt = '';
+  let promptNumber = 1;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Look for numbered prompts (1.1, 1.2, 2.1, etc.) - must be at start of line
+    if (/^\d+\.\d+\s/.test(line)) {
+      // Save previous prompt if exists
+      if (currentPrompt.trim().length > 0) {
+        prompts.push({
+          response: currentPrompt.trim(),
+          batchLabel: `Prompt ${promptNumber}`
+        });
+        promptNumber++;
+      }
+      
+      // Start new prompt
+      currentPrompt = line;
+    } 
+    // Continue adding to current prompt (skip copy code lines)
+    else if (currentPrompt.length > 0 && line.length > 0 && !line.includes('Copy code')) {
+      currentPrompt += '\n' + line;
+    }
+    // Empty line ends the current prompt
+    else if (currentPrompt.length > 0 && line.length === 0) {
+      prompts.push({
+        response: currentPrompt.trim(),
+        batchLabel: `Prompt ${promptNumber}`
+      });
+      promptNumber++;
+      currentPrompt = '';
+    }
+  }
+  
+  // Add the last prompt if exists
+  if (currentPrompt.trim().length > 0) {
+    prompts.push({
+      response: currentPrompt.trim(),
+      batchLabel: `Prompt ${promptNumber}`
+    });
+  }
+  
+  return prompts;
+}
