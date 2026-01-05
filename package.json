@@ -10,7 +10,7 @@
     "start": "node download-gemini-images.js",
     "electron:dev": "electron electron-main.js",
     "generate:icon": "node scripts/generate-icon.js",
-    "build": "electron-builder",
+    "build": "electron-builder --publish never",
     "package-win": "npm run generate:icon && electron-builder --win --publish never",
     "package-mac": "npm run generate:icon && electron-builder --mac --publish never",
     "package-linux": "npm run generate:icon && electron-builder --linux --publish never",
