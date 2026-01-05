@@ -1,7 +1,15 @@
 const fs = require('fs');
 const path = require('path');
-const pngToIco = require('png-to-ico');
 const { createCanvas } = require('canvas');
+
+// Import png-to-ico properly
+let pngToIco;
+try {
+  pngToIco = require('png-to-ico');
+} catch (e) {
+  console.error('Failed to import png-to-ico:', e);
+  process.exit(1);
+}
 
 async function generateIcon() {
   // Create a canvas for drawing
@@ -37,7 +45,14 @@ async function generateIcon() {
   const pngBuffer = canvas.toBuffer('image/png');
   
   // Convert PNG to ICO
-  const icoBuffer = await pngToIco(pngBuffer);
+  let icoBuffer;
+  try {
+    icoBuffer = await pngToIco(pngBuffer);
+  } catch (e) {
+    console.error('Failed to convert PNG to ICO:', e);
+    // Fallback: just use the PNG buffer
+    icoBuffer = pngBuffer;
+  }
   
   // Ensure build directory exists
   const buildDir = path.join(__dirname, '..', 'build');
