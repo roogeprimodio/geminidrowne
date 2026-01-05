@@ -10,7 +10,7 @@
     "start": "node download-gemini-images.js",
     "electron:dev": "electron electron-main.js",
     "generate:icon": "node scripts/generate-icon.js",
-    "build": "npm run generate:icon && electron-builder",
+    "build": "electron-builder",
     "package-win": "npm run generate:icon && electron-builder --win --publish never",
     "package-mac": "npm run generate:icon && electron-builder --mac --publish never",
     "package-linux": "npm run generate:icon && electron-builder --linux --publish never",
@@ -33,7 +33,6 @@
   "build": {
     "appId": "com.geimidown.app",
     "productName": "Gemini Image Downloader",
-    "icon": "build/icon.ico",
     "asar": true,
     "asarUnpack": [
       "node_modules/playwright/**/*",
@@ -59,7 +58,6 @@
         "nsis",
         "portable"
       ],
-      "icon": "build/icon.ico",
       "verifyUpdateCodeSignature": false
     },
     "mac": {
@@ -68,7 +66,6 @@
         "dmg",
         "zip"
       ],
-      "icon": "build/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false
     },
