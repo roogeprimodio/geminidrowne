@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const size = 256; // square icon size (meets Windows >=256px requirement)
+const size = 512; // square icon size (meets macOS >=512x512 requirement)
 const bg = { r: 8, g: 12, b: 26, a: 255 };
 const accent = { r: 111, g: 255, b: 233, a: 255 };
 
