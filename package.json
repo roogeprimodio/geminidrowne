@@ -54,9 +54,28 @@
     "artifactName": "Gemini-Image-Downloader-${version}-Setup.${ext}",
     "win": {
       "target": [
-        "nsis"
+        "nsis",
+        "portable"
       ],
+      "icon": "build/icon.ico",
       "verifyUpdateCodeSignature": false
+    },
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility"
     },
     "nsis": {
       "oneClick": false,
