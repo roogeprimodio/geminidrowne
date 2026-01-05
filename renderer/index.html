@@ -71,13 +71,37 @@
             <section class="automation-actions">
               <div class="action-row">
                 <div class="action-buttons">
-                  <button class="primary" id="run-chatgpt-btn">Run ChatGPT batch</button>
-                  <button class="primary outline" id="run-gemini-btn">Run Gemini replay</button>
-                  <button class="ghost" id="view-output-btn">📄 View Output</button>
+                  <button class="primary" id="run-chatgpt-btn">Run ChatGPT</button>
+                  <button class="primary outline" id="run-gemini-btn">Run Gemini</button>
+                  <button class="ghost" id="chatgpt-responses-btn">🧠 ChatGPT Responses</button>
+                  <button class="ghost" id="view-output-btn">📄 Gemini Output</button>
+                  <button class="ghost" id="open-extraction-btn">🔗 Extract from Chat</button>
                 </div>
                 <div class="automation-status">
                   <span>Status</span>
                   <div id="automation-status-pill" class="status-pill idle">Idle</div>
+                </div>
+                <div class="action-buttons right">
+                  <button class="ghost danger" id="reset-output-btn">🧹 Reset ChatGPT Data</button>
+                  <button class="ghost danger" id="reset-app-btn">⏹️ Reset All</button>
+                </div>
+              </div>
+              <div class="control-row">
+                <div class="control-group">
+                  <p class="eyebrow">ChatGPT controls</p>
+                  <div class="control-buttons">
+                    <button class="ghost" id="chatgpt-pause-btn">Pause</button>
+                    <button class="ghost" id="chatgpt-resume-btn">Resume</button>
+                    <button class="ghost" id="chatgpt-stop-btn">Stop</button>
+                  </div>
+                </div>
+                <div class="control-group">
+                  <p class="eyebrow">Gemini controls</p>
+                  <div class="control-buttons">
+                    <button class="ghost" id="gemini-pause-btn">Pause</button>
+                    <button class="ghost" id="gemini-resume-btn">Resume</button>
+                    <button class="ghost" id="gemini-stop-btn">Stop</button>
+                  </div>
                 </div>
               </div>
               <p class="action-note">
@@ -211,6 +235,58 @@
       </section>
     </main>
   </div>
+
+  <!-- Output Editor Modal -->
+  <div id="output-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>📄 Gemini Prompts Output</h2>
+        <div class="modal-actions">
+          <button class="ghost" id="download-output-btn">💾 Download</button>
+          <button class="ghost" id="close-modal-btn">✕ Close</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <textarea id="output-editor" placeholder="No prompts available yet..."></textarea>
+      </div>
+      <div class="modal-footer">
+        <div class="footer-info">
+          <span id="output-status">Ready</span>
+          <span id="output-stats">0 prompts</span>
+        </div>
+        <div class="footer-actions">
+          <button class="primary" id="save-output-btn">💾 Save Changes</button>
+          <button class="ghost" id="clear-output-btn">🗑️ Clear All</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ChatGPT Responses Modal -->
+  <div id="responses-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>🧠 ChatGPT Responses</h2>
+        <div class="modal-actions">
+          <button class="ghost" id="download-responses-btn">💾 Download</button>
+          <button class="ghost" id="close-responses-btn">✕ Close</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <textarea id="responses-editor" placeholder="No responses yet..."></textarea>
+      </div>
+      <div class="modal-footer">
+        <div class="footer-info">
+          <span id="responses-status">Ready</span>
+          <span id="responses-stats">0 responses</span>
+        </div>
+        <div class="footer-actions">
+          <button class="ghost" id="clear-responses-btn">🗑️ Clear</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="renderer.js"></script>
 </body>
 </html>

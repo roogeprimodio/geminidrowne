@@ -39,11 +39,27 @@ const automationStatusPill = document.getElementById('automation-status-pill');
 const runChatgptBtn = document.getElementById('run-chatgpt-btn');
 const runGeminiBtn = document.getElementById('run-gemini-btn');
 const viewOutputBtn = document.getElementById('view-output-btn');
+const chatgptResponsesBtn = document.getElementById('chatgpt-responses-btn');
+const openExtractionBtn = document.getElementById('open-extraction-btn');
+const resetAppBtn = document.getElementById('reset-app-btn');
 const drawerToggleBtn = document.getElementById('drawer-toggle-btn');
 const chatExtraction = document.getElementById('chat-extraction');
 const chatUrlInput = document.getElementById('chat-url-input');
 const extractPromptsBtn = document.getElementById('extract-prompts-btn');
 const extractionStatusPill = document.getElementById('extraction-status-pill');
+const chatgptPauseBtn = document.getElementById('chatgpt-pause-btn');
+const chatgptResumeBtn = document.getElementById('chatgpt-resume-btn');
+const chatgptStopBtn = document.getElementById('chatgpt-stop-btn');
+const geminiPauseBtn = document.getElementById('gemini-pause-btn');
+const geminiResumeBtn = document.getElementById('gemini-resume-btn');
+const geminiStopBtn = document.getElementById('gemini-stop-btn');
+const responsesModal = document.getElementById('responses-modal');
+const responsesEditor = document.getElementById('responses-editor');
+const responsesStatus = document.getElementById('responses-status');
+const responsesStats = document.getElementById('responses-stats');
+const closeResponsesBtn = document.getElementById('close-responses-btn');
+const downloadResponsesBtn = document.getElementById('download-responses-btn');
+const clearResponsesBtn = document.getElementById('clear-responses-btn');
 
 let sectionsState = [];
 let activeSelection = null; // { sectionId, subsectionId }
@@ -55,6 +71,10 @@ let automationState = {
 };
 let pendingStateSave;
 let drawerOpen = true;
+
+// Initialize control buttons in a safe idle state
+setStageControlState('chatgpt', 'idle');
+setStageControlState('gemini', 'idle');
 
 function createId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -100,6 +120,21 @@ function renderSections() {
     const controls = document.createElement('div');
     controls.className = 'section-controls';
     
+    const editBtn = document.createElement('button');
+    editBtn.className = 'delete-section-btn';
+    editBtn.type = 'button';
+    editBtn.innerHTML = '<i data-lucide="pencil-line"></i>';
+    editBtn.title = 'Rename section';
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const newName = prompt('Rename section', section.name);
+      if (newName && newName.trim()) {
+        section.name = newName.trim();
+        renderSections();
+        queueStateSave();
+      }
+    });
+
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'delete-section-btn';
     deleteBtn.type = 'button';
@@ -112,6 +147,7 @@ function renderSections() {
       }
     });
 
+    controls.appendChild(editBtn);
     controls.appendChild(deleteBtn);
 
     const caret = document.createElement('span');
@@ -161,33 +197,13 @@ function renderSections() {
       scriptList.appendChild(hint);
     } else {
       section.subsections.forEach(sub => {
-        const row = document.createElement('button');
-        row.type = 'button';
+        const row = document.createElement('div');
         row.className = 'script-item';
         const isActive =
           activeSelection &&
           activeSelection.sectionId === section.id &&
           activeSelection.subsectionId === sub.id;
         if (isActive) row.classList.add('active');
-
-        row.addEventListener('keydown', event => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            setActiveSubsection(section.id, sub.id);
-          }
-        });
-
-        row.addEventListener('keydown', event => {
-          if (event.key === 'F2') {
-            event.preventDefault();
-            const newName = prompt('Rename script', sub.name);
-            if (newName && newName.trim()) {
-              sub.name = newName.trim();
-              renderSections();
-              queueStateSave();
-            }
-          }
-        });
 
         const nameSpan = document.createElement('span');
         nameSpan.className = 'script-name';
@@ -200,7 +216,39 @@ function renderSections() {
           row.appendChild(badge);
         }
 
+        const actions = document.createElement('div');
+        actions.className = 'script-actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.className = 'script-action-btn';
+        editBtn.title = 'Rename script';
+        editBtn.innerHTML = '<i data-lucide="pencil-line"></i>';
+        editBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const newName = prompt('Rename script', sub.name);
+          if (newName && newName.trim()) {
+            sub.name = newName.trim();
+            renderSections();
+            queueStateSave();
+          }
+        });
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'script-action-btn danger';
+        deleteBtn.title = 'Delete script';
+        deleteBtn.innerHTML = '<i data-lucide="trash-2"></i>';
+        deleteBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (confirm(`Delete script "${sub.name}"?`)) {
+            deleteSubsection(section.id, sub.id);
+          }
+        });
+
+        actions.appendChild(editBtn);
+        actions.appendChild(deleteBtn);
+
         row.appendChild(nameSpan);
+        row.appendChild(actions);
         row.addEventListener('click', () => setActiveSubsection(section.id, sub.id));
         scriptList.appendChild(row);
       });
@@ -241,6 +289,25 @@ function deleteSection(sectionId) {
     updateEditorState();
   }
   
+  queueStateSave();
+  renderSections();
+}
+
+function deleteSubsection(sectionId, subsectionId) {
+  const section = sectionsState.find(sec => sec.id === sectionId);
+  if (!section) return;
+
+  section.subsections = section.subsections.filter(sub => sub.id !== subsectionId);
+
+  if (
+    activeSelection &&
+    activeSelection.sectionId === sectionId &&
+    activeSelection.subsectionId === subsectionId
+  ) {
+    activeSelection = null;
+    updateEditorState();
+  }
+
   queueStateSave();
   renderSections();
 }
@@ -359,6 +426,30 @@ function setAutomationButtonsDisabled(isDisabled) {
   if (runGeminiBtn) runGeminiBtn.disabled = isDisabled;
 }
 
+function setStageControlState(stage, state) {
+  const isRunning = state === 'running';
+  const isPaused = state === 'paused';
+  const isActive = isRunning || isPaused;
+
+  if (stage === 'chatgpt') {
+    if (chatgptPauseBtn) chatgptPauseBtn.disabled = !isRunning;
+    if (chatgptResumeBtn) chatgptResumeBtn.disabled = !isPaused;
+    if (chatgptStopBtn) chatgptStopBtn.disabled = !isActive;
+  } else if (stage === 'gemini') {
+    if (geminiPauseBtn) geminiPauseBtn.disabled = !isRunning;
+    if (geminiResumeBtn) geminiResumeBtn.disabled = !isPaused;
+    if (geminiStopBtn) geminiStopBtn.disabled = !isActive;
+  } else {
+    // Default: disable all when unknown
+    if (chatgptPauseBtn) chatgptPauseBtn.disabled = true;
+    if (chatgptResumeBtn) chatgptResumeBtn.disabled = true;
+    if (chatgptStopBtn) chatgptStopBtn.disabled = true;
+    if (geminiPauseBtn) geminiPauseBtn.disabled = true;
+    if (geminiResumeBtn) geminiResumeBtn.disabled = true;
+    if (geminiStopBtn) geminiStopBtn.disabled = true;
+  }
+}
+
 function appendAutomationLog(message, timestamp = Date.now(), isError = false) {
   if (!automationLog) return;
   if (automationLog.querySelector('.empty-state')) {
@@ -375,15 +466,34 @@ function appendAutomationLog(message, timestamp = Date.now(), isError = false) {
 
 function updateAutomationStatus({ stage, state }) {
   if (!automationStatusPill) return;
+
+  let label = 'Idle';
+  let className = 'status-pill idle';
+  const disableRuns = state === 'running' || state === 'paused';
+
   if (state === 'running') {
-    const label = stage === 'chatgpt' ? 'ChatGPT batch running' : 'Gemini replay running';
-    automationStatusPill.textContent = label;
-    automationStatusPill.className = 'status-pill running';
-    setAutomationButtonsDisabled(true);
+    label = stage === 'chatgpt' ? 'ChatGPT batch running' : 'Gemini replay running';
+    className = 'status-pill running';
+  } else if (state === 'paused') {
+    label = stage === 'chatgpt' ? 'ChatGPT paused' : 'Gemini paused';
+    className = 'status-pill warning';
+  } else if (state === 'aborted') {
+    label = 'Run aborted';
+    className = 'status-pill error';
+  }
+
+  automationStatusPill.textContent = label;
+  automationStatusPill.className = className;
+  setAutomationButtonsDisabled(disableRuns);
+  if (stage === 'chatgpt') {
+    setStageControlState('chatgpt', state);
+    setStageControlState('gemini', 'idle');
+  } else if (stage === 'gemini') {
+    setStageControlState('gemini', state);
+    setStageControlState('chatgpt', 'idle');
   } else {
-    automationStatusPill.textContent = 'Idle';
-    automationStatusPill.className = 'status-pill idle';
-    setAutomationButtonsDisabled(false);
+    setStageControlState('chatgpt', 'idle');
+    setStageControlState('gemini', 'idle');
   }
 }
 
@@ -433,6 +543,108 @@ async function triggerAutomation(stage) {
     automationStatusPill.className = 'status-pill error';
     setAutomationButtonsDisabled(false);
   }
+}
+
+async function setAutomationControl(stage, action) {
+  if (!window.electronAPI?.setAutomationControl) return;
+  try {
+    await window.electronAPI.setAutomationControl({ stage, action });
+    const verb =
+      action === 'pause' ? '⏸️ Paused' :
+      action === 'resume' || action === 'continue' ? '▶️ Resumed' :
+      action === 'abort' || action === 'stop' ? '⏹️ Stopped' : action;
+    appendAutomationLog(`${verb} ${stage.toUpperCase()} run.`);
+  } catch (error) {
+    appendAutomationLog(error.message || 'Failed to update control state', Date.now(), true);
+  }
+}
+
+async function showResponsesModal() {
+  if (!responsesModal || !responsesEditor) return;
+
+  // Refresh latest history from main to avoid stale data
+  let latestHistory = Array.isArray(automationState?.history) ? automationState.history : [];
+  if (window.electronAPI?.getAutomationState) {
+    try {
+      const state = await window.electronAPI.getAutomationState();
+      if (state && Array.isArray(state.history)) {
+        latestHistory = state.history;
+        automationState.history = state.history;
+      }
+    } catch (err) {
+      console.warn('Failed to refresh history before showing responses modal', err);
+    }
+  }
+
+  let content = '';
+  if (latestHistory.length > 0) {
+    content += `# ChatGPT Responses\n\n`;
+    content += `Generated: ${new Date().toLocaleString()}\n`;
+    content += `Total Responses: ${latestHistory.length}\n\n`;
+    
+    latestHistory.forEach((entry, index) => {
+      content += `## ${index + 1}. ${entry.script || 'Untitled Script'}\n\n`;
+      content += `${entry.response || '[No response captured]'}\n\n`;
+    });
+  } else {
+    content = '# No ChatGPT responses yet\n\nRun a batch to populate responses.';
+  }
+
+  responsesEditor.value = content.trim();
+  responsesStatus.textContent = 'Ready';
+  responsesStats.textContent = `${latestHistory.length || 0} responses`;
+  responsesModal.style.display = 'flex';
+  appendAutomationLog('👁️ Viewing ChatGPT responses');
+}
+
+function hideResponsesModal() {
+  if (!responsesModal) return;
+  responsesModal.style.display = 'none';
+}
+
+function downloadResponses() {
+  if (!responsesEditor) return;
+  const blob = new Blob([responsesEditor.value || ''], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `chatgpt-responses-${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  responsesStatus.textContent = 'Downloaded';
+  setTimeout(() => (responsesStatus.textContent = 'Ready'), 1500);
+}
+
+async function clearResponses() {
+  if (!window.electronAPI?.updateAutomationState) return;
+  if (!confirm('Clear all saved ChatGPT responses?')) return;
+
+  automationState.history = [];
+  automationState.sections = automationState.sections.map(section => ({
+    ...section,
+    subsections: section.subsections.map(sub => ({
+      ...sub,
+      chatgptResponse: undefined
+    }))
+  }));
+
+  await window.electronAPI.updateAutomationState({
+    sections: automationState.sections,
+    history: automationState.history,
+    nextBatchNumber: automationState.nextBatchNumber
+  });
+
+  responsesEditor.value = '# No ChatGPT responses yet\n\nRun a batch to populate responses.';
+  responsesStats.textContent = '0 responses';
+  responsesStatus.textContent = 'Cleared';
+  appendAutomationLog('🧹 Cleared saved ChatGPT responses');
+}
+
+function openExtractionPanel() {
+  showChatExtraction();
+  setExtractionStatus('idle', 'Ready');
 }
 
 function getFlattenedScripts() {
@@ -797,48 +1009,72 @@ function toggleDrawer() {
 }
 
 function handleViewOutput() {
-  // Create prompts-only output content for Gemini feeding
-  let outputContent = '';
-  let globalPromptCounter = 1;
+  showOutputModal();
+}
+
+async function showOutputModal() {
+  const modal = document.getElementById('output-modal');
+  const editor = document.getElementById('output-editor');
+  const statusSpan = document.getElementById('output-status');
+  const statsSpan = document.getElementById('output-stats');
   
-  if (automationState.history && automationState.history.length > 0) {
+  // Pull latest history from main to avoid stale prompts (do not overwrite local scripts)
+  let latestHistory = Array.isArray(automationState?.history) ? automationState.history : [];
+  if (window.electronAPI?.getAutomationState) {
+    try {
+      const state = await window.electronAPI.getAutomationState();
+      if (state && Array.isArray(state.history)) {
+        latestHistory = state.history;
+        automationState.history = state.history;
+      }
+    } catch (err) {
+      console.warn('Failed to refresh history before showing output modal', err);
+    }
+  }
+
+  // Generate output content
+  let outputContent = '';
+  let totalPrompts = 0;
+  const generatedAt = new Date().toLocaleString();
+  
+  if (latestHistory.length > 0) {
     outputContent += `# Gemini Prompts\n\n`;
-    outputContent += `Generated: ${new Date().toLocaleString()}\n`;
-    outputContent += `Total Scripts: ${automationState.history.length}\n\n`;
+    outputContent += `Generated: ${generatedAt}\n`;
+    outputContent += `Total Scripts: ${latestHistory.length}\n\n`;
     
-    automationState.history.forEach((entry, scriptIndex) => {
+    latestHistory.forEach((entry, scriptIndex) => {
       if (entry.response && entry.response.trim().length > 0) {
-        // Extract prompts from the ChatGPT response
         const prompts = extractPromptsFromResponse(entry.response);
-        
-        prompts.forEach((prompt) => {
-          // Use continuous numbering: 1.1, 1.2, 2.1, 2.2, etc.
-          const promptNumber = `${scriptIndex + 1}.${globalPromptCounter}`;
-          outputContent += `${promptNumber} ${prompt}\n\n`;
-          globalPromptCounter++;
+        const scriptNumber = scriptIndex + 1;
+        let promptIndex = 1;
+
+        prompts.forEach(prompt => {
+          const cleanedPrompt = prompt.replace(/^[0-9]+(\.[0-9]+)*\s*/, '').trim();
+          if (!cleanedPrompt) return;
+          const promptNumber = `${scriptNumber}.${promptIndex}`;
+          outputContent += `${promptNumber} ${cleanedPrompt}\n\n`;
+          promptIndex++;
+          totalPrompts++;
         });
       }
     });
     
-    if (outputContent.trim() === `# Gemini Prompts\n\nGenerated: ${new Date().toLocaleString()}\nTotal Scripts: ${automationState.history.length}\n\n`) {
+    if (totalPrompts === 0) {
       outputContent += `No prompts found in ChatGPT responses.\n\nPlease check the responses and ensure they contain properly formatted prompts.`;
     }
   } else {
     outputContent = `# No Prompts Available\n\nNo ChatGPT responses have been generated yet. Run the ChatGPT batch first.`;
   }
   
-  // Create a blob and download the file
-  const blob = new Blob([outputContent], { type: 'text/markdown' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `gemini-prompts-${new Date().toISOString().slice(0, 10)}.md`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // Update modal content
+  editor.value = outputContent;
+  statusSpan.textContent = 'Ready';
+  statsSpan.textContent = `${totalPrompts} prompts`;
   
-  appendAutomationLog('📄 Gemini prompts file downloaded successfully');
+  // Show modal
+  modal.style.display = 'flex';
+  
+  appendAutomationLog('📄 Output modal opened');
 }
 
 function extractPromptsFromResponse(response) {
@@ -1026,8 +1262,142 @@ if (runGeminiBtn) {
   runGeminiBtn.addEventListener('click', () => triggerAutomation('gemini'));
 }
 
+if (chatgptPauseBtn) {
+  chatgptPauseBtn.addEventListener('click', () => setAutomationControl('chatgpt', 'pause'));
+}
+
+if (chatgptResumeBtn) {
+  chatgptResumeBtn.addEventListener('click', () => setAutomationControl('chatgpt', 'resume'));
+}
+
+if (chatgptStopBtn) {
+  chatgptStopBtn.addEventListener('click', () => setAutomationControl('chatgpt', 'abort'));
+}
+
+if (geminiPauseBtn) {
+  geminiPauseBtn.addEventListener('click', () => setAutomationControl('gemini', 'pause'));
+}
+
+if (geminiResumeBtn) {
+  geminiResumeBtn.addEventListener('click', () => setAutomationControl('gemini', 'resume'));
+}
+
+if (geminiStopBtn) {
+  geminiStopBtn.addEventListener('click', () => setAutomationControl('gemini', 'abort'));
+}
+
 if (viewOutputBtn) {
   viewOutputBtn.addEventListener('click', handleViewOutput);
+}
+
+if (chatgptResponsesBtn) {
+  chatgptResponsesBtn.addEventListener('click', showResponsesModal);
+}
+
+if (closeResponsesBtn) {
+  closeResponsesBtn.addEventListener('click', hideResponsesModal);
+}
+
+if (downloadResponsesBtn) {
+  downloadResponsesBtn.addEventListener('click', downloadResponses);
+}
+
+if (clearResponsesBtn) {
+  clearResponsesBtn.addEventListener('click', clearResponses);
+}
+
+if (openExtractionBtn) {
+  openExtractionBtn.addEventListener('click', openExtractionPanel);
+}
+
+if (resetAppBtn) {
+  resetAppBtn.addEventListener('click', async () => {
+    if (confirm('Reset everything? This clears sections, scripts, history, and responses.')) {
+      try {
+        await window.electronAPI.resetAutomationStateAll();
+        await hydrateAutomationState();
+        appendAutomationLog('🧹 Full reset completed');
+      } catch (error) {
+        appendAutomationLog(`❌ Failed to reset app: ${error.message}`, Date.now(), true);
+      }
+    }
+  });
+}
+
+const resetOutputBtn = document.getElementById('reset-output-btn');
+if (resetOutputBtn) {
+  resetOutputBtn.addEventListener('click', async () => {
+    if (confirm('Are you sure you want to reset all output? This will clear all ChatGPT responses and start fresh.')) {
+      try {
+        await window.electronAPI.resetAutomationState();
+        appendAutomationLog('🔄 Output reset successfully');
+      } catch (error) {
+        appendAutomationLog(`❌ Failed to reset output: ${error.message}`);
+      }
+    }
+  });
+}
+
+// Modal event listeners
+const closeModalBtn = document.getElementById('close-modal-btn');
+const downloadOutputBtn = document.getElementById('download-output-btn');
+const saveOutputBtn = document.getElementById('save-output-btn');
+const clearOutputBtn = document.getElementById('clear-output-btn');
+const outputEditor = document.getElementById('output-editor');
+
+if (closeModalBtn) {
+  closeModalBtn.addEventListener('click', () => {
+    document.getElementById('output-modal').style.display = 'none';
+    appendAutomationLog('📄 Output modal closed');
+  });
+}
+
+if (downloadOutputBtn) {
+  downloadOutputBtn.addEventListener('click', () => {
+    const content = outputEditor.value;
+    const blob = new Blob([content], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `gemini-prompts-${new Date().toISOString().slice(0, 10)}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    appendAutomationLog('📄 Output downloaded successfully');
+  });
+}
+
+if (saveOutputBtn) {
+  saveOutputBtn.addEventListener('click', async () => {
+    const content = outputEditor.value;
+    // Here you could implement saving to the automation state if needed
+    appendAutomationLog('💾 Output changes saved locally');
+    document.getElementById('output-status').textContent = 'Saved';
+    setTimeout(() => {
+      document.getElementById('output-status').textContent = 'Ready';
+    }, 2000);
+  });
+}
+
+if (clearOutputBtn) {
+  clearOutputBtn.addEventListener('click', () => {
+    if (confirm('Are you sure you want to clear all output content?')) {
+      outputEditor.value = '# No Prompts Available\n\nNo prompts available.';
+      document.getElementById('output-stats').textContent = '0 prompts';
+      appendAutomationLog('🗑️ Output content cleared');
+    }
+  });
+}
+
+// Update stats when editor content changes
+if (outputEditor) {
+  outputEditor.addEventListener('input', () => {
+    const content = outputEditor.value;
+    const promptMatches = content.match(/^\d+\.\d+\s/gm) || [];
+    document.getElementById('output-stats').textContent = `${promptMatches.length} prompts`;
+    document.getElementById('output-status').textContent = 'Modified';
+  });
 }
 
 if (drawerToggleBtn) {

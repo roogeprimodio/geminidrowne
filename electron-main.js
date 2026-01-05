@@ -1,13 +1,25 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { runDownloader } = require('./download-gemini-images.js');
-const { runChatGPTBatch, runGeminiReplay, extractPromptsFromChat, saveExtractedPrompts } = require('./automation-runner');
+const {
+  runChatGPTBatch,
+  runGeminiReplay,
+  extractPromptsFromChat,
+  saveExtractedPrompts,
+  extractPromptsFromResponse
+} = require('./automation-runner');
 const { loadAutomationState, saveAutomationState, getDefaultState } = require('./automation-store');
 
 let mainWindow;
 let isDownloading = false;
 let automationState = getDefaultState();
 let automationBusy = false;
+const automationControl = {
+  chatgpt: { paused: false, aborted: false },
+  gemini: { paused: false, aborted: false }
+};
+
+const makeId = (prefix = 'id') => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -42,6 +54,20 @@ function broadcastAutomationState(target) {
   const webContents = target || (mainWindow && mainWindow.webContents);
   if (webContents) {
     webContents.send('automation-state', automationState);
+  }
+}
+
+function resetAutomationControl(stage) {
+  if (automationControl[stage]) {
+    automationControl[stage].paused = false;
+    automationControl[stage].aborted = false;
+  }
+}
+
+function broadcastAutomationStatus(payload) {
+  const webContents = mainWindow && mainWindow.webContents;
+  if (webContents && !webContents.isDestroyed()) {
+    webContents.send('automation-run-status', payload);
   }
 }
 
@@ -121,6 +147,52 @@ ipcMain.handle('automation-state:update', async (event, payload) => {
   return automationState;
 });
 
+// Add reset handler for new conversations
+ipcMain.handle('automation-state:reset', async (event) => {
+  automationState.history = [];
+  automationState.nextBatchNumber = 1;
+  automationState.sections = automationState.sections.map(section => ({
+    ...section,
+    subsections: section.subsections.map(sub => ({
+      ...sub,
+      chatgptResponse: undefined
+    }))
+  }));
+  saveAndBroadcastAutomationState();
+  return automationState;
+});
+
+ipcMain.handle('automation-state:reset-all', async () => {
+  automationState = getDefaultState();
+  saveAndBroadcastAutomationState();
+  return automationState;
+});
+
+ipcMain.handle('automation-control:set', async (event, { stage, action }) => {
+  if (!automationControl[stage]) {
+    throw new Error('Unknown automation stage.');
+  }
+
+  const control = automationControl[stage];
+
+  if (action === 'pause') {
+    control.paused = true;
+    broadcastAutomationStatus({ stage, state: 'paused' });
+  } else if (action === 'resume' || action === 'continue') {
+    control.paused = false;
+    control.aborted = false;
+    broadcastAutomationStatus({ stage, state: 'running' });
+  } else if (action === 'abort' || action === 'stop') {
+    control.aborted = true;
+    control.paused = false;
+    broadcastAutomationStatus({ stage, state: 'aborted' });
+  } else {
+    throw new Error('Unknown automation action.');
+  }
+
+  return control;
+});
+
 ipcMain.handle('automation-run', async (event, { stage }) => {
   if (automationBusy) {
     throw new Error('Another automation run is already in progress.');
@@ -134,19 +206,35 @@ ipcMain.handle('automation-run', async (event, { stage }) => {
 
   log(`📊 Found ${flattenScripts().length} total scripts, ${scripts.length} with content`);
   
-  if (scripts.length === 0) {
+  if (stage === 'chatgpt' && scripts.length === 0) {
     throw new Error('Please add at least one script with content before running automation.');
   }
 
   automationBusy = true;
+  resetAutomationControl(stage);
   sendStatus({ stage, state: 'running' });
 
   try {
+    // Always refresh state from disk before running to pick up latest extractions
+    automationState = loadAutomationState();
+
     if (stage === 'chatgpt') {
+      // Start fresh: clear previous ChatGPT responses/history so new run never merges
+      automationState.history = [];
+      automationState.sections = automationState.sections.map(section => ({
+        ...section,
+        subsections: section.subsections.map(sub => ({
+          ...sub,
+          chatgptResponse: undefined
+        }))
+      }));
+      saveAndBroadcastAutomationState();
+
       // Use scripts as-is, no batching or duplicate checking
       const result = await runChatGPTBatch({
         scripts: scripts,
         log,
+        control: automationControl[stage],
         onResult: async result => {
           const match = findSubsection(result.sectionId, result.subsectionId);
           if (!match) return;
@@ -155,7 +243,7 @@ ipcMain.handle('automation-run', async (event, { stage }) => {
             timestamp: Date.now(),
             sectionId: result.sectionId,
             subsectionId: result.subsectionId,
-            script: match.subsection.script || '',
+            script: '', // do not persist user script content in history
             response: result.response
           });
           saveAndBroadcastAutomationState();
@@ -172,50 +260,47 @@ ipcMain.handle('automation-run', async (event, { stage }) => {
       // Return the result to the renderer
       return result;
     } else if (stage === 'gemini') {
-      // Read prompts from any available output file
-      const fs = require('fs');
-      const path = require('path');
-      
-      // Use the app's working directory (where electron-main.js is located)
-      const appDir = __dirname;
-      
-      // Look for both gemini-prompts and chatgpt-output files
-      const geminiFiles = fs.readdirSync(appDir).filter(f => f.startsWith('gemini-prompts-') && f.endsWith('.md'));
-      const chatgptFiles = fs.readdirSync(appDir).filter(f => f.includes('chatgpt-output') && f.endsWith('.md'));
-      
-      // Combine all files and get the most recent one
-      const allFiles = [...geminiFiles, ...chatgptFiles];
-      
-      log(`🔍 Searching for prompt files in: ${appDir}`);
-      
-      if (allFiles.length === 0) {
-        throw new Error('No prompt files found. Please run ChatGPT batch first to generate prompts.');
+      // Build prompts directly from the latest ChatGPT history to avoid stale files
+      const history = Array.isArray(automationState.history) ? automationState.history : [];
+      if (history.length === 0) {
+        throw new Error('No ChatGPT responses available. Run ChatGPT batch first.');
       }
-      
-      // Get the most recent file by modification time
-      let latestFile = allFiles[0];
-      let latestTime = fs.statSync(path.join(appDir, latestFile)).mtime;
-      
-      for (const file of allFiles) {
-        const fileTime = fs.statSync(path.join(appDir, file)).mtime;
-        if (fileTime > latestTime) {
-          latestFile = file;
-          latestTime = fileTime;
-        }
-      }
-      
-      const fullPath = path.join(appDir, latestFile);
-      log(`📄 Reading prompts from: ${fullPath}`);
-      
-      const fileContent = fs.readFileSync(fullPath, 'utf8');
-      const prompts = parseGeminiPromptsFile(fileContent);
-      
+
+      const prompts = [];
+      let scriptCounter = 1;
+      history.forEach((entry) => {
+        if (!entry?.response) return;
+        const extracted = extractPromptsFromResponse(entry.response);
+        let promptCounter = 1;
+        extracted.forEach((prompt) => {
+          const trimmed = (prompt || '').trim();
+          if (!trimmed) return;
+          const numberMatch = trimmed.match(/^(\d+\.\d+(?:\.\d+)*)\s+/);
+          let finalPrompt = trimmed;
+          let label;
+
+          if (numberMatch) {
+            label = numberMatch[1];
+          } else {
+            label = `${scriptCounter}.${promptCounter}`;
+            finalPrompt = `${label} ${trimmed}`;
+            promptCounter++;
+          }
+
+          prompts.push({
+            response: finalPrompt,
+            batchLabel: `Prompt ${label}`
+          });
+        });
+        scriptCounter++;
+      });
+
       if (prompts.length === 0) {
-        throw new Error('No prompts found in the prompts file. The file may not contain properly formatted prompts.');
+        throw new Error('No prompts found in ChatGPT responses. Please check the responses and try again.');
       }
 
       log(`🎯 Found ${prompts.length} prompts for Gemini processing`);
-      const result = await runGeminiReplay({ prompts, log });
+      const result = await runGeminiReplay({ prompts, log, control: automationControl[stage] });
       
       // Return the result to the renderer
       return result;
@@ -223,6 +308,7 @@ ipcMain.handle('automation-run', async (event, { stage }) => {
       throw new Error('Unknown automation stage.');
     }
   } finally {
+    resetAutomationControl(stage);
     automationBusy = false;
     sendStatus({ stage, state: 'idle' });
   }
@@ -259,21 +345,15 @@ ipcMain.handle('extract-prompts-from-chat', async (event, { chatUrl }) => {
       throw new Error('No prompts found in the provided chat.');
     }
 
-    // Save as new subsections
-    const newSubsections = await saveExtractedPrompts(extractedPrompts, log);
-    
-    // Add to automation state
-    if (automationState.sections.length === 0) {
-      // Create a new section if none exists
-      automationState.sections.push({
-        id: 'extracted-' + Date.now(),
-        name: 'Extracted Prompts',
-        subsections: newSubsections
-      });
-    } else {
-      // Add to the first existing section
-      automationState.sections[0].subsections.push(...newSubsections);
-    }
+    // Store extracted prompts directly in history (do not touch user sections)
+    const extractedSectionId = makeId('chat-extract');
+    automationState.history = extractedPrompts.map((prompt, index) => ({
+      timestamp: Date.now(),
+      sectionId: extractedSectionId,
+      subsectionId: makeId('sub'),
+      script: `Extracted Prompt ${index + 1}`,
+      response: prompt // treat extracted prompt as the ChatGPT response
+    }));
 
     saveAndBroadcastAutomationState();
     
@@ -282,7 +362,7 @@ ipcMain.handle('extract-prompts-from-chat', async (event, { chatUrl }) => {
     return {
       success: true,
       promptsCount: extractedPrompts.length,
-      subsectionsCount: newSubsections.length,
+      subsectionsCount: extractedPrompts.length,
       prompts: extractedPrompts
     };
     

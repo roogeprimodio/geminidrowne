@@ -6,66 +6,50 @@ const { app } = require('electron');
 const CHATGPT_URL = 'https://chatgpt.com/';
 const GEMINI_URL = 'https://gemini.google.com/app';
 
-const BASE_PROMPT = `You are a current-affairs visual prompt writer with MEMORY across this session.
+const BASE_PROMPT = `You are an image-prompt generator for a Current Affairs Bulletin.
 
-SESSION RULES (VERY IMPORTANT):
+I will provide CURRENT AFFAIRS SCRIPTS one by one. Each script is considered a NEW SCRIPT (or batch).
 
-1. The FIRST script I provide = Batch 1 → numbering starts from 1.1
-2. The SECOND script I provide = Batch 2 → numbering MUST start from 2.1
-3. The THIRD script I provide = Batch 3 → numbering MUST start from 3.1
-4. Continue incrementing batch numbers automatically for every new script.
-5. NEVER ask me for the batch number — you must infer it from order.
+Each script will be provided in this format:
+Script Title: [Script Name]
+[Full script content follows]
 
-DUPLICATE SAFETY CHECK (MANDATORY):
+YOUR TASK:
+- For EACH SEGMENT in the script, generate MULTIPLE IMAGE CREATION PROMPTS (multiple frames) to fully cover that segment.
+- All prompts must be directly and clearly related to the segment content.
+- Treat each new script as a new batch and continue numbering within that script only.
 
+NUMBERING RULES:
+- Use the SCRIPT NUMBER as the first number.
+- Format: ScriptNumber.PromptNumber
+  Examples:
+    - Script 1 → 1.1, 1.2, 1.3…
+    - Script 2 → 2.1, 2.2, 2.3…
+- Numbering must **continue sequentially within the script**.
+- When a new script is provided, numbering starts at ScriptNumber.1.
+- Do NOT carry over numbering between scripts.
 
-and always gimme in copyable block all per prompt 
+FORMAT RULES:
+- Keep prompts segment-wise.
+- Each prompt must be in its **own copyable line** or block.
+- Each prompt must START with its number, for example:
 
+1.1 A realistic cinematic shot of the Prime Minister of India seated in an official office, participating in a high-level video conference, formal lighting, national emblem visible
 
-6. Before generating prompts, ALWAYS compare the new script with ALL previous scripts from this session.
-7. If the script is IDENTICAL or SUBSTANTIALLY THE SAME as a previous one:
-   - STOP generation immediately
-   - Notify me clearly:
-     "⚠️ This script appears to be already used (matches Batch X). Please confirm or provide a new script."
-   - Do NOT generate any prompts until I respond.
+1.2 A wide-angle news-style visual of a virtual governance meeting interface showing ministers and state officials on large screens
 
-OUTPUT RULES (STRICT):
+- Do not mix content between segments.
+- Do not add explanations, headings, or commentary outside the prompts.
 
-8. For each valid new script:
-   - Generate ONE SINGLE BATCH
-   - Use CONTINUOUS NUMBERING ONLY within that batch:
-     Format: BATCHNUMBER.1, BATCHNUMBER.2, BATCHNUMBER.3 …
-   - Each prompt must be in its OWN SEPARATE BLOCK
-   - The numbering is PART of the prompt text
+IMAGE PROMPT STYLE:
+- Realistic, cinematic, news-focused visuals
+- Clear subject, environment, lighting, and mood
+- Suitable for AI image generation
+- No unnecessary text overlays unless required by news or governance context
 
-IMAGE CONTENT RULES (NON-NEGOTIABLE):
+OUTPUT ONLY THE IMAGE PROMPTS. and each prompts to be in its own copyable block like code  copy block 
 
-9. Ultra-realistic, news-documentary, editorial visuals only.
-10. ABSOLUTELY NO TEXT inside images:
-    - no words
-    - no letters
-    - no numbers
-    - no banners
-    - no signage
-    - no logos
-    - no watermarks
-11. Ensure all people, flags, buildings, protests, or symbols contain NOTHING readable.
-
-STYLE RULES:
-
-12. Cinematic lighting, realistic textures, natural colors.
-13. Exam-safe, factual, neutral visuals.
-14. No fantasy, no illustration, no artistic abstraction.
-15. No explanations, no headings, no commentary.
-
-MANDATORY ENDING:
-
-16. EVERY prompt must end with EXACTLY:
-    aspect ratio 1:1
-
-BEGIN CONDITION:
-
-17. Start generating ONLY after receiving a new, non-duplicate script.`;
+I will now provide the first script.`;
 
 let chatGPTBrowser = null;
 let chatGPTPage = null;
@@ -349,11 +333,61 @@ async function submitMessage(page, text, label, log) {
     throw new Error(`Failed to locate element with selector: ${targetSelector}`);
   }
   
-  // Focus and interact
-  await target.focus();
-  await page.waitForTimeout(300);
-  await target.click();
-  await page.waitForTimeout(300);
+  // Focus and interact with fallback methods
+  try {
+    // Method 1: Try direct focus and click
+    await target.focus();
+    await page.waitForTimeout(300);
+    await target.click({ timeout: 5000 });
+    await page.waitForTimeout(300);
+  } catch (clickError) {
+    log(`⚠️ Direct click failed, trying alternative methods...`);
+    
+    // Method 2: Try clicking with force
+    try {
+      await target.click({ force: true });
+      await page.waitForTimeout(300);
+    } catch (forceClickError) {
+      log(`⚠️ Force click failed, trying JavaScript focus...`);
+      
+      // Method 3: Use JavaScript to focus and click
+      await page.evaluate((selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.focus();
+          element.click();
+        }
+      }, targetSelector);
+      await page.waitForTimeout(300);
+    }
+  }
+  
+  // Alternative: Try clicking on the chat input area container
+  try {
+    await page.evaluate(() => {
+      // Look for the main chat input container
+      const containers = [
+        'div[role="main"] textarea',
+        'form textarea',
+        '.chat-input textarea',
+        '[data-testid="chat-input"] textarea',
+        'textarea[placeholder*="Message"]'
+      ];
+      
+      for (const selector of containers) {
+        const element = document.querySelector(selector);
+        if (element && element.offsetParent !== null) {
+          element.focus();
+          element.click();
+          return true;
+        }
+      }
+      return false;
+    });
+    await page.waitForTimeout(300);
+  } catch (containerError) {
+    log(`⚠️ Container click failed, proceeding with keyboard methods...`);
+  }
   
   // Clear any existing text and paste the entire text at once
   await page.keyboard.press('Control+a');
@@ -1192,7 +1226,7 @@ async function waitForGeminiResponse(page) {
   }
 }
 
-async function runGeminiReplay({ prompts, log }) {
+async function runGeminiReplay({ prompts, log, control }) {
   if (!prompts || prompts.length === 0) {
     throw new Error('No prompts available for Gemini replay.');
   }
@@ -1202,6 +1236,9 @@ async function runGeminiReplay({ prompts, log }) {
 
   // Process each prompt one by one with proper waiting
   for (let i = 0; i < prompts.length; i++) {
+    await waitIfPaused(control, log);
+    ensureNotAborted(control);
+
     // Check if page is still valid before processing each prompt
     if (geminiPage.isClosed()) {
       throw new Error('Gemini page was closed during processing');
@@ -1316,61 +1353,203 @@ function extractPromptsFromResponse(response) {
 async function extractPromptsFromChat(chatUrl, log) {
   log(`🔗 Extracting prompts from ChatGPT chat: ${chatUrl}`);
   
-  const { browser: chatGPTBrowser, page: chatGPTPage } = await launchFreshBrowser(
+  // Always keep shared browser/page references updated to avoid TDZ errors
+  const launched = await launchFreshBrowser(
     { browser: chatGPTBrowser },
     'ChatGPT'
   );
+  chatGPTBrowser = launched.browser;
+  chatGPTPage = launched.page;
   
   try {
     await chatGPTPage.goto(chatUrl, { waitUntil: 'domcontentloaded' });
     log('📍 Chat page loaded');
     
-    // Wait for content to load
-    await chatGPTPage.waitForTimeout(3000);
+    // Load full conversation by scrolling up to load older messages
+    await chatGPTPage.evaluate(async () => {
+      const sleep = ms => new Promise(res => setTimeout(res, ms));
+      let lastScrollPosition = 0;
+      let samePositionCount = 0;
+      
+      // Initial scroll to bottom to ensure we're at the latest messages
+      window.scrollTo(0, document.body.scrollHeight);
+      await sleep(1000);
+      
+      // Keep scrolling up until we can't scroll anymore
+      for (let i = 0; i < 50; i++) {
+        const prevHeight = document.body.scrollHeight;
+        window.scrollTo(0, 0);
+        await sleep(800); // Increased sleep time to ensure content loads
+        
+        // Check if we've reached the top or if content isn't loading
+        const currentScroll = window.scrollY;
+        if (currentScroll === lastScrollPosition) {
+          samePositionCount++;
+          if (samePositionCount > 2) break; // Stop if we're not making progress
+        } else {
+          samePositionCount = 0;
+          lastScrollPosition = currentScroll;
+        }
+        
+        const newHeight = document.body.scrollHeight;
+        if (newHeight === prevHeight) break;
+      }
+      
+      // Stay at the top to ensure all messages are loaded in the DOM
+      window.scrollTo(0, 0);
+    });
     
-    // Extract all prompts from the entire chat (both user messages and any numbered content)
+    // Extract prompts from assistant messages, code blocks, and markdown content
     const prompts = await chatGPTPage.evaluate(() => {
-      const promptElements = [];
+      const results = [];
       
-      // Look for all content that could be prompts
-      const allMessages = document.querySelectorAll('[data-message-author-role="user"], .prose, .markdown, [data-message-author-role="assistant"]');
-      
-      allMessages.forEach((element, index) => {
-        const text = element.innerText || element.textContent;
-        if (text && text.trim().length > 10) {
-          // Check if this looks like a prompt (has script-like content)
-          const isPrompt = text.includes('script:') || 
-                          text.includes('Video Title') || 
-                          text.includes('YouTube') ||
-                          text.includes('MCQs') ||
-                          /^\d+\.\d+\s/.test(text.trim()) ||
-                          (text.includes('Batch') && text.includes('script:'));
+      // Try multiple selectors to find assistant messages and content
+      const assistantNodes = Array.from(document.querySelectorAll(
+        '[data-message-author-role="assistant"], ' +
+        '.markdown, ' +
+        '.prose, ' +
+        '.markdown-content, ' +
+        '.markdown-body, ' +
+        '.markdown-prose, ' +
+        '.chat-message, ' +
+        '.message, ' +
+        '.assistant-message, ' +
+        '.assistant-content'
+      ));
+
+      // Function to check and add numbered prompts
+      const pushIfNumbered = line => {
+        // Clean up the line and remove any 'Copy code' text
+        const cleanedLine = line
+          .replace(/(\w+)?\s*Copy\s*code/gi, '')
+          .replace(/^\s*```[\s\S]*?\n|```\s*$/g, '') // Remove code block markers
+          .trim();
           
-          if (isPrompt) {
-            promptElements.push({
-              index: index + 1,
-              text: text.trim()
+        // Match patterns like '12.8', '1.1', etc. followed by text
+        const match = cleanedLine.match(/^(\d+\.\d+)\s+(.+)$/);
+        if (match) {
+          results.push({
+            number: match[1],
+            text: match[2].trim(),
+            fullText: cleanedLine
+          });
+          return true;
+        }
+        return false;
+      };
+
+      // Process each potential message node
+      assistantNodes.forEach(node => {
+        try {
+          // Get all text content from the node
+          const nodeText = (node.innerText || node.textContent || '').trim();
+          if (!nodeText) return;
+          
+          // First try to process the entire node text for numbered prompts
+          const lines = nodeText.split('\n').map(l => l.trim()).filter(Boolean);
+          
+          // Process each line for numbered prompts
+          lines.forEach(line => {
+            // Handle lines with the format "12.8 Some prompt text"
+            const promptMatch = line.match(/^(\d+\.\d+)\s+(.+)$/);
+            if (promptMatch) {
+              results.push(`${promptMatch[1]} ${promptMatch[2].trim()}`);
+            }
+            // Also try to find prompts in code blocks
+            else if (line.includes('```') || line.match(/^\s*\w+\s*\n?```/)) {
+              const codeContent = line.replace(/^```[\s\S]*?\n|```\s*$/g, '').trim();
+              if (codeContent) {
+                const codeLines = codeContent.split('\n').map(l => l.trim()).filter(Boolean);
+                codeLines.forEach(codeLine => {
+                  const codePromptMatch = codeLine.match(/^(\d+\.\d+)\s+(.+)$/);
+                  if (codePromptMatch) {
+                    results.push(`${codePromptMatch[1]} ${codePromptMatch[2].trim()}`);
+                  }
+                });
+              }
+            }
+          });
+          
+          // Also check for code blocks separately
+          const codeBlocks = Array.from(node.querySelectorAll('pre, code'));
+          codeBlocks.forEach(block => {
+            const codeText = (block.innerText || block.textContent || '').trim();
+            if (!codeText) return;
+            
+            // Process each line of code for numbered prompts
+            codeText.split('\n').forEach(line => {
+              const trimmedLine = line.trim();
+              const codePromptMatch = trimmedLine.match(/^(\d+\.\d+)\s+(.+)$/);
+              if (codePromptMatch) {
+                results.push(trimmedLine);
+              }
             });
-          }
+          });
+        } catch (error) {
+          console.error('Error processing node:', error);
+          // Continue with the next node even if one fails
+        }
+      });
+
+      // Remove duplicates while preserving order and sort by prompt number
+      const uniquePrompts = [];
+      const seenNumbers = new Set();
+      
+      // First pass: collect all prompts with their numbers
+      const promptsWithNumbers = [];
+      results.forEach(prompt => {
+        const match = prompt.match(/^(\d+\.\d+)\s+(.+)$/);
+        if (match) {
+          promptsWithNumbers.push({
+            number: match[1],
+            text: match[2],
+            fullText: prompt
+          });
+        } else {
+          // Keep non-numbered prompts as is
+          promptsWithNumbers.push({
+            number: null,
+            text: prompt,
+            fullText: prompt
+          });
         }
       });
       
-      return promptElements;
+      // Sort by prompt number if available
+      promptsWithNumbers.sort((a, b) => {
+        if (!a.number && !b.number) return 0;
+        if (!a.number) return 1;
+        if (!b.number) return -1;
+        
+        const aParts = a.number.split('.').map(Number);
+        const bParts = b.number.split('.').map(Number);
+        
+        // Compare major version first
+        if (aParts[0] !== bParts[0]) return aParts[0] - bParts[0];
+        
+        // If major version is the same, compare minor version
+        return aParts[1] - bParts[1];
+      });
+      
+      // Remove duplicates while preserving order
+      promptsWithNumbers.forEach(prompt => {
+        const key = prompt.number || prompt.text;
+        if (!seenNumbers.has(key)) {
+          seenNumbers.add(key);
+          uniquePrompts.push(prompt.fullText);
+        }
+      });
+      
+      return uniquePrompts;
     });
     
     log(`📝 Found ${prompts.length} prompts in chat`);
     
     // Format prompts exactly as requested (preserve numbering and structure)
-    const formattedPrompts = prompts.map(prompt => {
-      // Check if prompt already has numbering (like "1.1", "2.1", etc.)
-      const hasNumbering = /^\d+\.\d+\s/.test(prompt.text);
-      
-      if (hasNumbering) {
-        return prompt.text; // Keep as-is if already numbered
-      } else {
-        // Add numbering if not present
-        return `${prompt.index}.1 ${prompt.text}`;
-      }
+    const formattedPrompts = prompts.map((text, index) => {
+      const hasNumbering = /^\d+\.\d+\s/.test(text);
+      if (hasNumbering) return text;
+      return `${index + 1}.1 ${text}`;
     });
     
     log('✅ Prompts extracted and formatted successfully');
@@ -1498,7 +1677,35 @@ async function validateScripts(scripts, log) {
   return validation;
 }
 
-async function runChatGPTBatch({ scripts, log, onResult }) {
+async function waitIfPaused(control, log) {
+  if (!control) return;
+  if (control.aborted) {
+    throw new Error('Run aborted by user');
+  }
+
+  if (!control.paused) return;
+
+  let notified = false;
+  while (control.paused && !control.aborted) {
+    if (!notified) {
+      log('⏸️ Paused. Waiting to continue...');
+      notified = true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 700));
+  }
+
+  if (control.aborted) {
+    throw new Error('Run aborted by user');
+  }
+}
+
+function ensureNotAborted(control) {
+  if (control && control.aborted) {
+    throw new Error('Run aborted by user');
+  }
+}
+
+async function runChatGPTBatch({ scripts, log, onResult, control }) {
   log(`📊 Processing ${scripts ? scripts.length : 0} scripts`);
   
   if (!scripts || scripts.length === 0) {
@@ -1539,6 +1746,7 @@ async function runChatGPTBatch({ scripts, log, onResult }) {
   const initialCount = await page.locator(assistantSelector).count();
   
   try {
+    ensureNotAborted(control);
     await submitMessage(page, BASE_PROMPT, 'base prompt', log);
     const baseResponse = await waitForChatGPTResponse(page, initialCount, log);
     log('🧠 Session memory primed.');
@@ -1550,6 +1758,9 @@ async function runChatGPTBatch({ scripts, log, onResult }) {
   // Process each script sequentially in the same chat
   let processedCount = 0;
   for (let i = 0; i < scripts.length; i++) {
+    await waitIfPaused(control, log);
+    ensureNotAborted(control);
+
     const script = scripts[i];
     
     // Skip empty scripts
@@ -1563,12 +1774,67 @@ async function runChatGPTBatch({ scripts, log, onResult }) {
     
     try {
       const countBefore = await page.locator(assistantSelector).count();
-      await submitMessage(page, script.script, script.scriptName, log);
       
-      log(`⏳ Waiting for AI response...`);
+      // Format script with title as specified
+      const scriptWithHeader = `Script Title: ${script.scriptName}\n\n${script.script}`;
+      
+      await submitMessage(page, scriptWithHeader, script.scriptName, log);
+      
+      log(`⏳ Waiting for AI response to complete...`);
       const response = await waitForChatGPTResponse(page, countBefore, log);
       
-      log(`✅ Response received for ${script.scriptName}`);
+      // Additional wait to ensure ChatGPT has completely finished
+      log(`⏸️ Ensuring response is fully complete...`);
+      await page.waitForTimeout(5000); // Increased from 3000 to 5000
+      
+      // Verify no ongoing generation
+      let stillGenerating = true;
+      let attempts = 0;
+      while (stillGenerating && attempts < 15) { // Increased from 10 to 15 attempts
+        stillGenerating = await page.evaluate(() => {
+          // Check for any typing indicators, loading states, or incomplete responses
+          const indicators = [
+            '.result-thinking',
+            '.cursor-blink',
+            '[data-testid="thinking"]',
+            '.generating',
+            '.loading',
+            '.streaming',
+            '.typing-indicator',
+            '[aria-label*="typing"]',
+            '[aria-label*="generating"]',
+            '.message-streaming'
+          ];
+          
+          // Also check for any element with "generating" or "typing" in text content
+          const allElements = document.querySelectorAll('*');
+          const hasGeneratingText = Array.from(allElements).some(el => {
+            const text = el.textContent || '';
+            return text.toLowerCase().includes('generating') || 
+                   text.toLowerCase().includes('typing') ||
+                   text.toLowerCase().includes('thinking');
+          });
+          
+          const hasVisibleIndicators = indicators.some(selector => {
+            const elements = document.querySelectorAll(selector);
+            return Array.from(elements).some(el => el.offsetParent !== null);
+          });
+          
+          return hasVisibleIndicators || hasGeneratingText;
+        });
+        
+        if (stillGenerating) {
+          log(`⏳ Still generating... waiting (${attempts + 1}/15)`);
+          await page.waitForTimeout(3000); // Increased from 2000 to 3000
+          attempts++;
+        }
+      }
+      
+      // Final wait to ensure complete stability
+      log(`⏸️ Final stability check...`);
+      await page.waitForTimeout(5000); // Additional 5 seconds
+      
+      log(`✅ Response fully completed for ${script.scriptName}`);
       
       if (typeof onResult === 'function') {
         await onResult({ ...script, response });
@@ -1579,6 +1845,9 @@ async function runChatGPTBatch({ scripts, log, onResult }) {
         log(`⏸️ Waiting before next script...`);
         await page.waitForTimeout(5000); // 5 seconds instead of 2
       }
+      
+      await waitIfPaused(control, log);
+      ensureNotAborted(control);
     } catch (error) {
       log(`❌ Error processing ${script.scriptName}: ${error.message}`);
     }
@@ -1601,5 +1870,6 @@ module.exports = {
   runGeminiReplay,
   extractPromptsFromChat,
   saveExtractedPrompts,
+  extractPromptsFromResponse,
   BASE_PROMPT
 };

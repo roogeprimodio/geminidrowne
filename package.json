@@ -10,7 +10,11 @@
     "start": "node download-gemini-images.js",
     "electron:dev": "electron electron-main.js",
     "generate:icon": "node scripts/generate-icon.js",
-    "dist": "npm run generate:icon && electron-builder",
+    "build": "npm run generate:icon && electron-builder",
+    "package-win": "npm run generate:icon && electron-builder --win --publish never",
+    "package-mac": "npm run generate:icon && electron-builder --mac --publish never",
+    "package-linux": "npm run generate:icon && electron-builder --linux --publish never",
+    "dist": "npm run generate:icon && electron-builder -mwl",
     "dist:win": "npm run generate:icon && electron-builder --win",
     "dist:mac": "npm run generate:icon && electron-builder --mac"
   },
@@ -34,7 +38,7 @@
       "node_modules/playwright-core/**/*"
     ],
     "directories": {
-      "output": "electron-dist",
+      "output": "dist",
       "buildResources": "build"
     },
     "files": [
