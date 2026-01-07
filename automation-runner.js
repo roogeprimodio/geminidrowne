@@ -1368,35 +1368,31 @@ async function extractPromptsFromChat(chatUrl, log) {
     // Load full conversation by scrolling up to load older messages
     await chatGPTPage.evaluate(async () => {
       const sleep = ms => new Promise(res => setTimeout(res, ms));
-      let lastScrollPosition = 0;
-      let samePositionCount = 0;
+      let lastHeight = 0;
+      let sameHeightCount = 0;
       
-      // Initial scroll to bottom to ensure we're at the latest messages
+      // Start from bottom (ChatGPT default position)
       window.scrollTo(0, document.body.scrollHeight);
-      await sleep(1000);
+      await sleep(2000);
       
-      // Keep scrolling up until we can't scroll anymore
-      for (let i = 0; i < 50; i++) {
-        const prevHeight = document.body.scrollHeight;
+      // Scroll up repeatedly to load all older messages
+      for (let i = 0; i < 100; i++) {
         window.scrollTo(0, 0);
-        await sleep(800); // Increased sleep time to ensure content loads
+        await sleep(1500);
         
-        // Check if we've reached the top or if content isn't loading
-        const currentScroll = window.scrollY;
-        if (currentScroll === lastScrollPosition) {
-          samePositionCount++;
-          if (samePositionCount > 2) break; // Stop if we're not making progress
+        const currentHeight = document.body.scrollHeight;
+        if (currentHeight === lastHeight) {
+          sameHeightCount++;
+          if (sameHeightCount > 3) break; // No more content loading
         } else {
-          samePositionCount = 0;
-          lastScrollPosition = currentScroll;
+          sameHeightCount = 0;
+          lastHeight = currentHeight;
         }
-        
-        const newHeight = document.body.scrollHeight;
-        if (newHeight === prevHeight) break;
       }
       
-      // Stay at the top to ensure all messages are loaded in the DOM
+      // Finally scroll to top to ensure all content is accessible
       window.scrollTo(0, 0);
+      await sleep(1000);
     });
     
     // Extract prompts from assistant messages, code blocks, and markdown content
@@ -1438,6 +1434,30 @@ async function extractPromptsFromChat(chatUrl, log) {
         return false;
       };
 
+      // Also look for prompts that might not be numbered but are in code blocks
+      const pushIfPromptLike = line => {
+        const cleanedLine = line
+          .replace(/(\w+)?\s*Copy\s*code/gi, '')
+          .replace(/^\s*```[\s\S]*?\n|```\s*$/g, '')
+          .trim();
+          
+        // Look for lines that seem like prompts (contain certain keywords or patterns)
+        if (cleanedLine.length > 10 && 
+            (cleanedLine.includes('prompt') || 
+             cleanedLine.includes('Generate') || 
+             cleanedLine.includes('Create') ||
+             cleanedLine.includes('Write') ||
+             cleanedLine.match(/^(Act as|You are|I need|Please)/))) {
+          results.push({
+            number: null,
+            text: cleanedLine,
+            fullText: cleanedLine
+          });
+          return true;
+        }
+        return false;
+      };
+
       // Process each potential message node
       assistantNodes.forEach(node => {
         try {
@@ -1448,27 +1468,17 @@ async function extractPromptsFromChat(chatUrl, log) {
           // First try to process the entire node text for numbered prompts
           const lines = nodeText.split('\n').map(l => l.trim()).filter(Boolean);
           
-          // Process each line for numbered prompts
+          // Process each line for numbered prompts first
           lines.forEach(line => {
-            // Handle lines with the format "12.8 Some prompt text"
-            const promptMatch = line.match(/^(\d+\.\d+)\s+(.+)$/);
-            if (promptMatch) {
-              results.push(`${promptMatch[1]} ${promptMatch[2].trim()}`);
-            }
-            // Also try to find prompts in code blocks
-            else if (line.includes('```') || line.match(/^\s*\w+\s*\n?```/)) {
-              const codeContent = line.replace(/^```[\s\S]*?\n|```\s*$/g, '').trim();
-              if (codeContent) {
-                const codeLines = codeContent.split('\n').map(l => l.trim()).filter(Boolean);
-                codeLines.forEach(codeLine => {
-                  const codePromptMatch = codeLine.match(/^(\d+\.\d+)\s+(.+)$/);
-                  if (codePromptMatch) {
-                    results.push(`${codePromptMatch[1]} ${codePromptMatch[2].trim()}`);
-                  }
-                });
-              }
-            }
+            pushIfNumbered(line);
           });
+          
+          // If no numbered prompts found, look for prompt-like content
+          if (results.length === 0) {
+            lines.forEach(line => {
+              pushIfPromptLike(line);
+            });
+          }
           
           // Also check for code blocks separately
           const codeBlocks = Array.from(node.querySelectorAll('pre, code'));
@@ -1479,9 +1489,9 @@ async function extractPromptsFromChat(chatUrl, log) {
             // Process each line of code for numbered prompts
             codeText.split('\n').forEach(line => {
               const trimmedLine = line.trim();
-              const codePromptMatch = trimmedLine.match(/^(\d+\.\d+)\s+(.+)$/);
-              if (codePromptMatch) {
-                results.push(trimmedLine);
+              pushIfNumbered(trimmedLine);
+              if (results.length === 0) {
+                pushIfPromptLike(trimmedLine);
               }
             });
           });
@@ -1494,23 +1504,24 @@ async function extractPromptsFromChat(chatUrl, log) {
       // Remove duplicates while preserving order and sort by prompt number
       const uniquePrompts = [];
       const seenNumbers = new Set();
+      const seenTexts = new Set();
       
       // First pass: collect all prompts with their numbers
       const promptsWithNumbers = [];
       results.forEach(prompt => {
-        const match = prompt.match(/^(\d+\.\d+)\s+(.+)$/);
+        const match = prompt.fullText.match(/^(\d+\.\d+)\s+(.+)$/);
         if (match) {
           promptsWithNumbers.push({
             number: match[1],
             text: match[2],
-            fullText: prompt
+            fullText: prompt.fullText
           });
         } else {
           // Keep non-numbered prompts as is
           promptsWithNumbers.push({
             number: null,
-            text: prompt,
-            fullText: prompt
+            text: prompt.text,
+            fullText: prompt.fullText
           });
         }
       });
@@ -1533,9 +1544,12 @@ async function extractPromptsFromChat(chatUrl, log) {
       
       // Remove duplicates while preserving order
       promptsWithNumbers.forEach(prompt => {
-        const key = prompt.number || prompt.text;
-        if (!seenNumbers.has(key)) {
-          seenNumbers.add(key);
+        const numberKey = prompt.number;
+        const textKey = prompt.text.toLowerCase().trim();
+        
+        if (!seenNumbers.has(numberKey) && !seenTexts.has(textKey)) {
+          seenNumbers.add(numberKey);
+          seenTexts.add(textKey);
           uniquePrompts.push(prompt.fullText);
         }
       });
@@ -1544,6 +1558,35 @@ async function extractPromptsFromChat(chatUrl, log) {
     });
     
     log(`📝 Found ${prompts.length} prompts in chat`);
+    
+    // Debug: Log what we found
+    if (prompts.length > 0) {
+      log('🔍 Sample prompts found:');
+      prompts.slice(0, 3).forEach((prompt, i) => {
+        log(`   ${i + 1}. ${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}`);
+      });
+    } else {
+      log('⚠️ No prompts found. Checking page content...');
+      
+      // Debug: Check what content we actually found
+      const debugInfo = await chatGPTPage.evaluate(() => {
+        const assistantNodes = document.querySelectorAll('[data-message-author-role="assistant"], .markdown, .prose, .chat-message');
+        return {
+          totalNodes: assistantNodes.length,
+          sampleContent: Array.from(assistantNodes).slice(0, 2).map(node => ({
+            tagName: node.tagName,
+            className: node.className,
+            textSample: (node.innerText || node.textContent || '').substring(0, 200)
+          }))
+        };
+      });
+      
+      log(`🔍 Found ${debugInfo.totalNodes} potential message nodes`);
+      debugInfo.sampleContent.forEach((sample, i) => {
+        log(`   Node ${i + 1}: ${sample.tagName} (${sample.className})`);
+        log(`   Sample: ${sample.textSample.substring(0, 100)}...`);
+      });
+    }
     
     // Format prompts exactly as requested (preserve numbering and structure)
     const formattedPrompts = prompts.map((text, index) => {
