@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <meta charset="UTF-8">
   <title>Gemini Image Downloader</title>
@@ -9,13 +10,15 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
+
 <body>
   <div class="app-shell">
     <header class="hero">
       <div>
         <p class="eyebrow">Gemini Ops Suite</p>
         <h1>Automate prompt runs or download finished chats</h1>
-        <p class="lede">Pick a workspace: start building the Prompt Automation Studio, or jump straight into the downloader that’s already battle-tested.</p>
+        <p class="lede">Pick a workspace: start building the Prompt Automation Studio, or jump straight into the
+          downloader that’s already battle-tested.</p>
       </div>
     </header>
 
@@ -43,11 +46,17 @@
               <h2>Workflow builder</h2>
             </div>
 
+            <div class="integrated-hubs">
+              <p class="eyebrow">Integrated Hubs</p>
+              <button class="ghost full" id="onenote-hub-btn">📖 OneNote Sync</button>
+            </div>
+
             <div class="add-section">
-              <label for="section-name-input">Create a section</label>
+              <p class="eyebrow">Workflow builder</p>
+              <label for="section-name-input">Create a group</label>
               <div class="input-row">
-                <input type="text" id="section-name-input" placeholder="e.g. Script Intake">
-                <button id="add-section-btn" class="primary pill">+ Section</button>
+                <input type="text" id="section-name-input" placeholder="e.g. Master Scripts">
+                <button id="add-section-btn" class="primary pill">+ Group</button>
               </div>
             </div>
 
@@ -63,7 +72,8 @@
               <div>
                 <p class="eyebrow">Design surface</p>
                 <h2>Manage batches, subsections, and scripts</h2>
-                <p class="lede">Define each workflow section, add togglable subsections, and capture the script text per item before wiring automation.</p>
+                <p class="lede">Define each workflow section, add togglable subsections, and capture the script text per
+                  item before wiring automation.</p>
               </div>
               <button class="ghost drawer-toggle" id="drawer-toggle-btn"><i data-lucide="menu"></i></button>
             </header>
@@ -73,9 +83,18 @@
                 <div class="action-buttons">
                   <button class="primary" id="run-chatgpt-btn">Run ChatGPT</button>
                   <button class="primary outline" id="run-gemini-btn">Run Gemini</button>
+                  <div class="aspect-ratio-selector">
+                    <span class="selector-label">Aspect Ratio:</span>
+                    <div class="aspect-ratio-buttons">
+                      <button class="ratio-btn active" data-ratio="1:1" title="Square (1:1)">1:1</button>
+                      <button class="ratio-btn" data-ratio="--ar 16:9" title="Landscape (16:9)">16:9</button>
+                      <button class="ratio-btn" data-ratio="--ar 9:16" title="Portrait (9:16)">9:16</button>
+                    </div>
+                  </div>
                   <button class="ghost" id="chatgpt-responses-btn">🧠 ChatGPT Responses</button>
                   <button class="ghost" id="view-output-btn">📄 Gemini Output</button>
-                  <button class="ghost" id="open-extraction-btn">🔗 Extract from Chat</button>
+                  <button class="ghost" id="open-extraction-btn">🔗 Extract Chat</button>
+                  <button class="ghost" id="engine-settings-btn">⚙️ Engines</button>
                 </div>
                 <div class="automation-status">
                   <span>Status</span>
@@ -105,7 +124,8 @@
                 </div>
               </div>
               <p class="action-note">
-                Visible browser automation only. Stay signed into ChatGPT and Gemini in the windows that open so the runs can proceed without violating privacy policies.
+                Visible browser automation only. Stay signed into ChatGPT and Gemini in the windows that open so the
+                runs can proceed without violating privacy policies.
               </p>
               <div class="action-log" id="automation-log">
                 <div class="log-header">
@@ -125,33 +145,29 @@
                   </div>
                 </div>
               </div>
-              
+
               <div class="chat-extraction" id="chat-extraction" style="display: none;">
                 <div class="extraction-header">
                   <div>
                     <p class="eyebrow">🎉 Batch completed!</p>
                     <h3>Extract prompts from ChatGPT chat</h3>
-                    <p class="lede">Provide the ChatGPT chat link to extract all prompts and save them as new subsections.</p>
+                    <p class="lede">Provide the ChatGPT chat link to extract all prompts and save them as new
+                      subsections.</p>
                   </div>
                 </div>
-                
+
                 <div class="extraction-form">
                   <div class="field">
                     <span>ChatGPT Chat URL <em>(required)</em></span>
                     <div class="url-row">
-                      <input
-                        type="url"
-                        id="chat-url-input"
-                        placeholder="https://chatgpt.com/share/..."
-                        required
-                      />
+                      <input type="url" id="chat-url-input" placeholder="https://chatgpt.com/share/..." required />
                       <button type="button" id="extract-prompts-btn" class="primary">
                         <span class="btn-label">Extract Prompts</span>
                         <span class="btn-spinner"></span>
                       </button>
                     </div>
                   </div>
-                  
+
                   <div class="extraction-status" id="extraction-status">
                     <span>Status</span>
                     <div id="extraction-status-pill" class="status-pill idle">Ready</div>
@@ -190,36 +206,20 @@
         <form id="download-form">
           <div class="field">
             <span>Gemini Share URL <em>(required)</em></span>
-            <input
-              type="url"
-              name="geminiUrl"
-              placeholder="https://gemini.google.com/share/..."
-              required
-            />
+            <input type="url" name="geminiUrl" placeholder="https://gemini.google.com/share/..." required />
           </div>
 
           <div class="field">
             <span>Custom output directory <em>(optional)</em></span>
             <div class="folder-row">
-              <input
-                type="text"
-                name="outputDir"
-                placeholder="Select a folder..."
-                readonly
-                id="output-dir"
-              />
+              <input type="text" name="outputDir" placeholder="Select a folder..." readonly id="output-dir" />
               <button type="button" id="browse-btn">Browse</button>
             </div>
           </div>
 
           <div class="field">
             <span>Output folder name <em>(default: gemini_images)</em></span>
-            <input
-              type="text"
-              name="outputFolderName"
-              placeholder="gemini_images"
-              id="folder-name"
-            />
+            <input type="text" name="outputFolderName" placeholder="gemini_images" id="folder-name" />
           </div>
 
           <div class="actions">
@@ -264,24 +264,146 @@
 
   <!-- ChatGPT Responses Modal -->
   <div id="responses-modal" class="modal" style="display: none;">
-    <div class="modal-content">
+    <div class="modal-content large">
       <div class="modal-header">
-        <h2>🧠 ChatGPT Responses</h2>
+        <h2>🧠 ChatGPT Responses (Parsed)</h2>
         <div class="modal-actions">
           <button class="ghost" id="download-responses-btn">💾 Download</button>
           <button class="ghost" id="close-responses-btn">✕ Close</button>
         </div>
       </div>
       <div class="modal-body">
-        <textarea id="responses-editor" placeholder="No responses yet..."></textarea>
+        <div class="prompt-review-header">
+          <p class="lede">View and manage parsed prompts from the ChatGPT history log.</p>
+          <div class="review-actions">
+            <button class="ghost danger" id="clear-responses-btn">🗑️ Clear History</button>
+          </div>
+        </div>
+        <div id="responses-card-list" class="prompt-card-list">
+          <!-- Parsed response cards will be injected here -->
+        </div>
       </div>
       <div class="modal-footer">
         <div class="footer-info">
           <span id="responses-status">Ready</span>
-          <span id="responses-stats">0 responses</span>
+          <span id="responses-stats">0 prompts found</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt Review Modal -->
+  <div id="prompt-review-modal" class="modal" style="display: none;">
+    <div class="modal-content large">
+      <div class="modal-header">
+        <h2>✏️ Review Extracted Prompts</h2>
+        <div class="modal-actions">
+          <button class="ghost" id="close-review-btn">✕ Cancel</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="prompt-review-header">
+          <p class="lede">Review, edit, or delete prompts before saving them as subsections.</p>
+          <div class="review-actions">
+            <button class="ghost danger" id="delete-all-prompts-btn">🗑️ Delete All</button>
+          </div>
+        </div>
+        <div id="prompt-card-list" class="prompt-card-list">
+          <!-- Prompt cards will be injected here -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="footer-info">
+          <span id="review-status">Ready</span>
+          <span id="review-stats">0 prompts</span>
         </div>
         <div class="footer-actions">
-          <button class="ghost" id="clear-responses-btn">🗑️ Clear</button>
+          <button class="primary" id="save-prompts-btn">💾 Save Selected Prompts</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- OneNote Hub Modal -->
+  <div id="onenote-modal" class="modal" style="display: none;">
+    <div class="modal-content large glass-modal">
+      <div class="modal-header">
+        <div class="header-main">
+          <div class="header-icon"><i data-lucide="book-open"></i></div>
+          <div>
+            <h2>OneNote Sync Hub</h2>
+            <p class="lede">Browse notebooks and sections to import scripts.</p>
+          </div>
+        </div>
+        <button class="ghost close-btn" id="close-onenote-btn"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body explorer-body">
+        <div id="onenote-login-view" class="login-center">
+          <div class="auth-card">
+            <div class="auth-icon"><i data-lucide="lock"></i></div>
+            <h3>Connect Microsoft Account</h3>
+            <p>Enter your Azure Client ID to access your OneNote content.</p>
+            <div class="field">
+              <input type="text" id="onenote-client-id" placeholder="Azure Client ID...">
+            </div>
+            <button class="primary full" id="onenote-login-btn">
+              <span>Sign in with Microsoft</span>
+              <i data-lucide="chevron-right"></i>
+            </button>
+          </div>
+        </div>
+
+        <div id="onenote-pages-view" style="display: none;" class="explorer-view">
+          <nav class="explorer-nav">
+            <div class="nav-controls">
+              <button class="ghost mini" id="onenote-back-btn" disabled>
+                <i data-lucide="arrow-left"></i> Back
+              </button>
+              <div id="onenote-breadcrumbs" class="breadcrumbs">
+                <span class="breadcrumb-item active">Notebooks</span>
+              </div>
+            </div>
+            <div class="search-box">
+              <i data-lucide="search"></i>
+              <input type="text" id="onenote-search" placeholder="Search notes...">
+            </div>
+          </nav>
+
+          <div id="onenote-content-list" class="explorer-list">
+            <!-- Content will be injected here -->
+          </div>
+
+          <div class="explorer-footer">
+            <div class="sync-status" id="onenote-status">Ready to sync</div>
+            <button class="ghost mini" id="onenote-refresh-btn">
+              <i data-lucide="rotate-cw"></i> Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Engine Settings Modal -->
+  <div id="engine-modal" class="modal" style="display: none;">
+    <div class="modal-content medium">
+      <div class="modal-header">
+        <h2>⚙️ Parallel Engine Settings</h2>
+        <button class="ghost" id="close-engine-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="lede">Manage multiple Gemini accounts for parallel processing. Each active engine runs in its own
+          window.</p>
+        <div id="engine-list" class="engine-list">
+          <!-- Engines will be injected here -->
+        </div>
+        <button class="primary outline full" id="add-engine-btn">+ Add Gemini Account</button>
+        <div class="engine-options">
+          <div class="checkbox-row">
+            <input type="checkbox" id="enable-parallel" checked>
+            <label for="enable-parallel">Enable Parallel Load Balancing</label>
+          </div>
+          <p class="action-note">Parallel processing uses more RAM. We recommend max 3 accounts at once.</p>
         </div>
       </div>
     </div>
@@ -289,4 +411,5 @@
 
   <script src="renderer.js"></script>
 </body>
+
 </html>

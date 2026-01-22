@@ -1,15 +1,16 @@
 const fs = require('fs');
 const path = require('path');
 
-const size = 256; // square icon size (meets Windows >=256px requirement)
+const size = 256;
 const bg = { r: 8, g: 12, b: 26, a: 255 };
-const accent = { r: 111, g: 255, b: 233, a: 255 };
+const cyan = { r: 111, g: 255, b: 233, a: 255 };
+const purple = { r: 127, g: 0, b: 255, a: 255 };
 
 const pixelData = Buffer.alloc(size * size * 4);
 
 function setPixel(x, y, color) {
   if (x < 0 || y < 0 || x >= size || y >= size) return;
-  const destY = size - 1 - y; // BMP stores rows bottom-up
+  const destY = size - 1 - y;
   const offset = (destY * size + x) * 4;
   pixelData[offset] = color.b;
   pixelData[offset + 1] = color.g;
@@ -17,37 +18,48 @@ function setPixel(x, y, color) {
   pixelData[offset + 3] = color.a;
 }
 
+// Background
 for (let y = 0; y < size; y++) {
   for (let x = 0; x < size; x++) {
     setPixel(x, y, bg);
   }
 }
 
-const shaftTop = Math.round(size * 0.18);
-const shaftBottom = Math.round(size * 0.72);
-const centerX = Math.floor(size / 2);
-
-for (let y = shaftTop; y <= shaftBottom; y++) {
-  for (let x = centerX - 2; x <= centerX + 2; x++) {
-    setPixel(x, y, accent);
+function drawCircle(cx, cy, radius, thickness, color) {
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+      if (Math.abs(dist - radius) < thickness / 2) {
+        setPixel(x, y, color);
+      }
+    }
   }
 }
 
-const headHeight = Math.round(size * 0.18);
-for (let i = 0; i < headHeight; i++) {
-  const y = shaftTop - i;
-  for (let spread = -i; spread <= i; spread++) {
-    setPixel(centerX + spread, y, accent);
+// Draw two interlocking circles (Gemini)
+drawCircle(size * 0.4, size * 0.5, size * 0.25, 8, cyan);
+drawCircle(size * 0.6, size * 0.5, size * 0.25, 8, purple);
+
+// Draw 'G' shape (simplified)
+const centerX = size / 2;
+const centerY = size / 2;
+const gRadius = size * 0.12;
+for (let y = 0; y < size; y++) {
+  for (let x = 0; x < size; x++) {
+    const dist = Math.sqrt((x - centerX) ** 2 + (y - centerY) ** 2);
+    // Draw arc for G
+    const angle = Math.atan2(y - centerY, x - centerX);
+    if (Math.abs(dist - gRadius) < 4 && (angle < -0.4 || angle > 0.4)) {
+      setPixel(x, y, cyan);
+    }
+    // Draw middle bar for G
+    if (y >= centerY - 2 && y <= centerY + 2 && x >= centerX && x <= centerX + gRadius) {
+      setPixel(x, y, cyan);
+    }
   }
 }
 
-const baseY = Math.round(size * 0.78);
-for (let x = Math.round(size * 0.2); x <= Math.round(size * 0.8); x++) {
-  for (let y = baseY; y < baseY + 4; y++) {
-    setPixel(x, y, accent);
-  }
-}
-
+// BMP/ICO packaging...
 const head = Buffer.alloc(6);
 head.writeUInt16LE(0, 0);
 head.writeUInt16LE(1, 2);
@@ -81,8 +93,7 @@ entry.writeUInt32LE(bytesInRes, 8);
 entry.writeUInt32LE(head.length + entry.length, 12);
 
 const icoBuffer = Buffer.concat([head, entry, bmpHeader, pixelData, andMask]);
-
 const outPath = path.join(__dirname, '..', 'build', 'icon.ico');
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 fs.writeFileSync(outPath, icoBuffer);
-console.log(`Generated ${outPath}`);
+console.log(`Generated premium redesigned icon at ${outPath}`);

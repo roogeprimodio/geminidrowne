@@ -68,7 +68,7 @@ async function scrollPageToBottom(page, log) {
 async function extractPromptsAndImages(page, log) {
   log('🔍 Extracting prompts and images from the chat...');
 
-  return await page.evaluate(() => {
+  const raw = await page.evaluate(() => {
     const debug_logs = [];
     const results = [];
 
@@ -127,18 +127,13 @@ async function extractPromptsAndImages(page, log) {
         return;
       }
 
-      const folderName = `${associatedPrompt.number}_${associatedPrompt.text}`
-        .replace(/[^\w\s.-]/g, ' ')
-        .replace(/\s+/g, '_')
-        .trim()
-        .substring(0, 150);
 
       const promptImageCount = results.filter(r => r.promptText === associatedPrompt.text).length + 1;
 
       results.push({
         url: image.src,
         promptText: associatedPrompt.text,
-        folderName,
+        promptNumber: associatedPrompt.number,
         imageNumber: promptImageCount
       });
     });
@@ -146,19 +141,36 @@ async function extractPromptsAndImages(page, log) {
     debug_logs.push(`[Debug] Associated ${results.length} images with prompts.`);
     return { results, debug_logs };
   });
+
+  // Construct folder names in Node context (so we have access to path.join)
+  const finalResults = raw.results.map(item => {
+    const scriptNumber = item.promptNumber.split('.')[0];
+    const promptFolder = `${item.promptNumber}_${item.promptText}`
+      .replace(/[^\w\s.-]/g, ' ')
+      .trim()
+      .replace(/\s+/g, '_')
+      .substring(0, 150);
+
+    return {
+      ...item,
+      folderName: path.join(`Script_${scriptNumber}`, promptFolder)
+    };
+  });
+
+  return { results: finalResults, debug_logs: raw.debug_logs };
 }
 
 async function downloadImage(imageData, log, baseDir = DEFAULT_OUTPUT_DIR) {
   const { url, promptText, folderName, imageNumber } = imageData;
   try {
-    const safeFolderName = folderName.replace(/[^\w\s.-]/g, '_').replace(/\s+/g, '_');
-    const folderPath = path.join(baseDir, safeFolderName);
+    // Clear up any extra slashes if path.join was used with multiple parts
+    const folderPath = path.join(baseDir, folderName);
 
     await fs.ensureDir(folderPath);
 
     const extension = path.extname(new URL(url).pathname).toLowerCase() || '.jpg';
     // Use the folder name for the image file, adding an index if it's not the first image.
-    const filenameBase = folderName.substring(0, 150);
+    const filenameBase = path.basename(folderName).substring(0, 150);
     const filename = imageNumber > 1 ? `${filenameBase}_${imageNumber}${extension}` : `${filenameBase}${extension}`;
     const filePath = path.join(folderPath, filename);
 
@@ -203,23 +215,26 @@ async function launchBrowser(log) {
     ]
   };
 
-  try {
-    log('🧭 Launching bundled Chromium runtime...');
-    return await chromium.launch(baseOptions);
-  } catch (error) {
-    const missingExecutable =
-      /Executable doesn't exist/i.test(error.message) ||
-      /Failed to launch browser/i.test(error.message);
+  const channelsToTry = [null, 'chrome', 'msedge'];
 
-    if (!missingExecutable) {
-      throw error;
+  for (const channel of channelsToTry) {
+    try {
+      if (channel) {
+        log(`🧭 Falling back to system ${channel === 'chrome' ? 'Chrome' : 'Edge'}...`);
+      } else {
+        log('🧭 Launching bundled Chromium runtime...');
+      }
+
+      const launchOptions = { ...baseOptions };
+      if (channel) launchOptions.channel = channel;
+
+      return await chromium.launch(launchOptions);
+    } catch (error) {
+      if (channel === channelsToTry[channelsToTry.length - 1]) {
+        throw error;
+      }
+      console.warn(`⚠️ Failed to launch with ${channel || 'default'}, trying next...`);
     }
-
-    log('⚠️ Bundled Chromium not found. Falling back to system Chrome (needs Google Chrome installed).');
-    return await chromium.launch({
-      ...baseOptions,
-      channel: 'chrome'
-    });
   }
 }
 
@@ -269,11 +284,11 @@ async function runDownloader(geminiUrl, options = {}) {
       const pageUrl = page.url();
       console.log(`📄 Page title: ${pageTitle}`);
       console.log(`🔗 Current URL: ${pageUrl}`);
-      
+
       if (pageUrl.includes('accounts.google.com') || pageTitle.toLowerCase().includes('sign in')) {
         throw new Error('❌ Authentication required. Google Gemini requires you to be signed in to view this chat.');
       }
-      
+
       // Handle potential cookie consent banners before waiting for content.
       try {
         console.log('👀 Looking for a cookie consent banner...');
@@ -285,24 +300,26 @@ async function runDownloader(geminiUrl, options = {}) {
         console.log('ℹ️ No cookie consent banner found or it was not clickable.');
       }
 
-      // Wait for a stable element (like the footer) to ensure the page is loaded.
-      console.log('⏳ Waiting for page to finish loading...');
+      // Wait for a stable element that indicates the chat is ready.
+      // We'll try multiple selectors and wait for ANY of them to appear.
+      console.log('⏳ Waiting for page elements to appear...');
       try {
-        await page.waitForSelector('text="Your privacy & Gemini Apps"', { timeout: 60000 });
-        console.log('✅ Page loaded. Giving chat content a moment to render...');
-        // Add a final small wait for the dynamic content to render in.
+        await Promise.race([
+          page.waitForSelector('img[src*="googleusercontent.com"]', { timeout: 30000 }),
+          page.waitForSelector('main', { timeout: 30000 }),
+          page.waitForSelector('text="Gemini"', { timeout: 30000 }),
+          page.waitForTimeout(10000) // Fallback: just wait 10 seconds if nothing matches
+        ]);
+        console.log('✅ Page check complete. Giving chat content a moment to render...');
         await page.waitForTimeout(5000);
       } catch (timeoutError) {
-        console.error('❌ Timed out waiting for page to load. The page structure might have changed or there is a network issue.');
-        await page.screenshot({ path: path.join(outputDir, 'timeout_error.png') });
-        console.log('📸 A screenshot has been saved to timeout_error.png to help debug.');
-        throw timeoutError; // Re-throw the error to stop the script.
+        console.warn('⚠️ Some expected elements didn\'t load, but we will attempt to proceed anyway.');
       }
 
       // Take a screenshot for debugging
       await page.screenshot({ path: path.join(outputDir, 'page_screenshot.png') });
       console.log('📸 Took a screenshot of the page for debugging: page_screenshot.png');
-      
+
     } catch (error) {
       console.error('❌ Error loading the page:', error.message);
       console.log('\n⚠️  NOTE: Google Gemini chats may require authentication or may not be accessible programmatically.');
@@ -312,16 +329,16 @@ async function runDownloader(geminiUrl, options = {}) {
       console.log('3. Try using the --browser flag: npx playwright install --with-deps');
       throw error;
     }
-    
+
     // Scroll to load all lazy-loaded images
     console.log('🔄 Scrolling to load all content...');
     await scrollPageToBottom(page, log);
-    
+
     // A final brief pause to ensure last images are rendered.
     console.log('⏳ Final wait for images to render...');
     await page.waitForTimeout(3000);
     console.log('✅ Ready to extract.');
-    
+
     // Try to find any load more buttons and click them
     try {
       const loadMoreButton = await page.$('button:has-text("Load more"), button:has-text("Show more")');
@@ -334,20 +351,20 @@ async function runDownloader(geminiUrl, options = {}) {
     } catch (e) {
       console.log('ℹ️ No "Load more" button found or clickable');
     }
-    
+
     // Extract prompts and images
     const { results: imageData, debug_logs } = await extractPromptsAndImages(page, log);
     console.log('--- Browser-side Debug Logs ---');
     debug_logs.forEach(log => console.log(log));
     console.log('-----------------------------');
-    
+
     if (imageData.length === 0) {
       console.log('ℹ️ No images with prompts were successfully extracted. Check debug logs for details.');
       return;
     }
-    
+
     console.log(`📸 Found ${imageData.length} images with prompts to download`);
-    
+
     // Download each image
     let successCount = 0;
     for (let i = 0; i < imageData.length; i++) {
@@ -355,15 +372,15 @@ async function runDownloader(geminiUrl, options = {}) {
       console.log(`⬇️  Downloading image ${i + 1}/${imageData.length}: ${data.folderName}`);
       const success = await downloadImage(data, log, outputDir);
       if (success) successCount++;
-      
+
       // Be nice to the server
       await new Promise(resolve => setTimeout(resolve, 500));
     }
-    
+
     console.log(`\n🎉 Download complete!`);
     console.log(`✅ Successfully downloaded ${successCount} out of ${imageData.length} images`);
     console.log(`📁 Images saved to: ${path.resolve(outputDir)}`);
-    
+
   } catch (error) {
     logError('❌ An error occurred: ' + error.message);
   } finally {
