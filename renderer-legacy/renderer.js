@@ -2142,33 +2142,218 @@ function renderOneNoteExplorer(data, parentType) {
     syncContainer.style.background = 'rgba(100, 200, 255, 0.1)';
     syncContainer.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
     syncContainer.innerHTML = `
-        <div class="icon"><i data-lucide="download-cloud" style="color: #64b5f6;"></i></div>
-        <div class="info">
-          <span class="name" style="color: #64b5f6;">Sync Entire "${currentOneNoteParent.name}"</span>
-          <span class="meta">Recursively import all sections and pages</span>
+        <div class="sync-header" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; padding: 0 10px;">
+          <div style="display: flex; align-items: center; flex: 1;">
+            <div class="icon" style="margin-right: 12px;">
+              <i data-lucide="download-cloud" style="color: #64b5f6; width: 20px; height: 20px;"></i>
+            </div>
+            <div class="info" style="flex: 1;">
+              <div class="name" style="color: #64b5f6; font-size: 1.1em; font-weight: 600; margin-bottom: 4px; display: block;">Download Complete Notebook</div>
+              <div class="meta" style="color: #888; font-size: 0.85em;">Fetch entire notebook with all sections, groups, and pages in one mega-batch request</div>
+            </div>
+          </div>
+          <div class="sync-controls">
+            <button id="minimize-sync-btn" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85em; font-weight: 500; transition: all 0.3s ease; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+              <i data-lucide="minus" style="width: 14px; height: 14px;"></i>
+            </button>
+          </div>
         </div>
       `;
+    
+    // Set proper container styling
+    syncContainer.style.position = 'relative';
+    syncContainer.style.padding = '15px';
+    syncContainer.style.display = 'flex';
+    syncContainer.style.flexDirection = 'column';
+    syncContainer.style.gap = '15px';
+
+    // Add progress bar
+    const progressContainer = document.createElement('div');
+    progressContainer.className = 'progress-section';
+    
+    const progressBar = document.createElement('div');
+    progressBar.style.width = '100%';
+    progressBar.style.height = '6px';
+    progressBar.style.backgroundColor = '#333';
+    progressBar.style.borderRadius = '3px';
+    progressBar.style.overflow = 'hidden';
+    
+    const progressFill = document.createElement('div');
+    progressFill.id = 'onenote-progress-fill';
+    progressFill.style.width = '0%';
+    progressFill.style.height = '100%';
+    progressFill.style.backgroundColor = '#64b5f6';
+    progressFill.style.transition = 'width 0.3s ease';
+    progressFill.style.borderRadius = '3px';
+    
+    progressBar.appendChild(progressFill);
+    progressContainer.appendChild(progressBar);
+    
+    // Add progress text
+    const progressText = document.createElement('div');
+    progressText.id = 'onenote-progress-text';
+    progressText.style.fontSize = '0.8em';
+    progressText.style.color = '#888';
+    progressText.style.marginTop = '5px';
+    progressText.textContent = 'Ready to sync';
+    
+    progressContainer.appendChild(progressText);
+    
+    // Add scrollable log area - SEPARATE and CLEAN
+    const logContainer = document.createElement('div');
+    logContainer.className = 'log-section';
+    logContainer.style.borderTop = '2px solid rgba(100, 200, 255, 0.2)';
+    logContainer.style.paddingTop = '15px';
+    logContainer.style.marginTop = '10px';
+    
+    const logHeader = document.createElement('div');
+    logHeader.style.display = 'flex';
+    logHeader.style.justifyContent = 'space-between';
+    logHeader.style.alignItems = 'center';
+    logHeader.style.marginBottom = '10px';
+    
+    const logTitle = document.createElement('div');
+    logTitle.style.fontSize = '1em';
+    logTitle.style.fontWeight = 'bold';
+    logTitle.style.color = '#64b5f6';
+    logTitle.textContent = '📋 Sync Progress Log';
+    
+    const clearLogBtn = document.createElement('button');
+    clearLogBtn.style.background = '#ff4444';
+    clearLogBtn.style.border = 'none';
+    clearLogBtn.style.color = 'white';
+    clearLogBtn.style.padding = '6px 12px';
+    clearLogBtn.style.borderRadius = '4px';
+    clearLogBtn.style.fontSize = '0.8em';
+    clearLogBtn.style.cursor = 'pointer';
+    clearLogBtn.textContent = 'Clear Log';
+    
+    clearLogBtn.addEventListener('click', () => {
+      const logArea = document.getElementById('onenote-sync-log');
+      if (logArea) {
+        logArea.textContent = '';
+        logArea.scrollTop = 0;
+      }
+    });
+    
+    logHeader.appendChild(logTitle);
+    logHeader.appendChild(clearLogBtn);
+    logContainer.appendChild(logHeader);
+    
+    const logArea = document.createElement('div');
+    logArea.id = 'onenote-sync-log';
+    logArea.style.height = '200px';
+    logArea.style.overflowY = 'auto';
+    logArea.style.backgroundColor = '#0a0a0a';
+    logArea.style.border = '1px solid #333';
+    logArea.style.borderRadius = '8px';
+    logArea.style.padding = '15px';
+    logArea.style.fontSize = '0.85em';
+    logArea.style.color = '#e0e0e0';
+    logArea.style.fontFamily = 'Consolas, "Courier New", monospace';
+    logArea.style.whiteSpace = 'pre-wrap';
+    logArea.style.lineHeight = '1.5';
+    logArea.style.marginBottom = '5px';
+    logArea.textContent = 'Ready to start sync...';
+    
+    logContainer.appendChild(logArea);
+    
+    syncContainer.appendChild(progressContainer);
+    syncContainer.appendChild(logContainer);
+    
+    // Add minimize functionality
+    const minimizeBtn = syncContainer.querySelector('#minimize-sync-btn');
+    let isMinimized = false;
+    
+    if (minimizeBtn) {
+      minimizeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        isMinimized = !isMinimized;
+        
+        if (isMinimized) {
+          // Minimize: hide progress and log, show minimal status
+          progressContainer.style.display = 'none';
+          logContainer.style.display = 'none';
+          syncContainer.querySelector('.sync-header').style.marginBottom = '0';
+          
+          // Create minimized status
+          const minimizedStatus = document.createElement('div');
+          minimizedStatus.id = 'minimized-status';
+          minimizedStatus.style.padding = '15px';
+          minimizedStatus.style.fontSize = '0.9em';
+          minimizedStatus.style.background = 'rgba(100, 200, 255, 0.1)';
+          minimizedStatus.style.borderRadius = '8px';
+          minimizedStatus.innerHTML = `
+            <div style="color: #64b5f6; font-weight: 500; margin-bottom: 5px;">
+              <i data-lucide="download" style="width: 16px; height: 16px; vertical-align: middle; margin-right: 8px;"></i>
+              Downloading Notebook...
+            </div>
+            <div id="minimized-progress" style="color: #888; font-size: 0.8em;">
+              Preparing mega-batch request...
+            </div>
+          `;
+          syncContainer.appendChild(minimizedStatus);
+          
+          minimizeBtn.innerHTML = '<i data-lucide="maximize2" style="width: 14px; height: 14px;"></i>';
+        } else {
+          // Restore
+          progressContainer.style.display = 'block';
+          logContainer.style.display = 'block';
+          syncContainer.querySelector('.sync-header').style.marginBottom = '15px';
+          
+          const minimizedStatus = syncContainer.querySelector('#minimized-status');
+          if (minimizedStatus) minimizedStatus.remove();
+          
+          minimizeBtn.innerHTML = '<i data-lucide="minus" style="width: 14px; height: 14px;"></i>';
+        }
+        
+        if (window.lucide) window.lucide.createIcons();
+      });
+    }
     syncContainer.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (confirm(`Import all content from "${currentOneNoteParent.name}"? This may look frozen while processing large notebooks.`)) {
-        onenoteStatus.textContent = "Syncing hierarchy... please wait";
+      if (confirm(`Import entire notebook "${currentOneNoteParent.name}" with all sections and pages? This will fetch the complete hierarchy at once.`)) {
+        onenoteStatus.textContent = "Starting complete notebook sync...";
         syncContainer.style.opacity = '0.5';
         syncContainer.style.pointerEvents = 'none';
+        
+        // Show progress elements
+        const progressFill = document.getElementById('onenote-progress-fill');
+        const progressText = document.getElementById('onenote-progress-text');
+        const logArea = document.getElementById('onenote-sync-log');
+        if (progressFill) progressFill.style.width = '0%';
+        if (progressText) progressText.textContent = 'Initializing complete sync...';
+        if (logArea) logArea.textContent = '';
 
         try {
-          const res = await window.electronAPI.oneNoteSyncHierarchy({
-            parentId: currentOneNoteParent.id,
-            parentType: currentOneNoteParent.type,
-            name: currentOneNoteParent.name
+          // Use complete notebook sync instead of hierarchical sync
+          const res = await window.electronAPI.oneNoteSyncCompleteNotebook({
+            notebookId: currentOneNoteParent.id,
+            notebookName: currentOneNoteParent.name
           });
 
           if (res.success) {
-            alert("Import successful! Content has been added to the sidebar.");
-            await loadAutomationState(); // Refresh sidebar
+            if (progressText) progressText.textContent = 'Complete notebook sync finished successfully!';
+            if (progressFill) progressFill.style.width = '100%';
+            appendAutomationLog(`✅ Successfully imported complete notebook "${currentOneNoteParent.name}"!`);
+            if (res.progress) {
+              appendAutomationLog(`📊 Sync Summary: ${res.progress.processedSections}/${res.progress.totalSections} sections, ${res.progress.processedPages}/${res.progress.totalPages} pages, ${res.progress.totalSectionGroups} section groups`);
+              if (res.progress.errors.length > 0) {
+                appendAutomationLog(`⚠️ ${res.progress.errors.length} errors occurred during sync`);
+                res.progress.errors.forEach(error => appendAutomationLog(`   ${error}`));
+              }
+            }
+            await hydrateAutomationState(); // Refresh sidebar
           } else {
+            if (progressText) progressText.textContent = 'Complete notebook sync failed!';
+            if (progressFill) progressFill.style.width = '0%';
+            appendAutomationLog(`❌ Import failed: ${res.error}`, Date.now(), true);
             alert("Import failed: " + res.error);
           }
         } catch (err) {
+          if (progressText) progressText.textContent = 'Complete notebook sync error!';
+          if (progressFill) progressFill.style.width = '0%';
+          appendAutomationLog(`❌ Sync error: ${err.message}`, Date.now(), true);
           alert("Sync error: " + err.message);
         }
         onenoteStatus.textContent = "Ready";
@@ -2352,6 +2537,88 @@ if (addEngineBtn) {
       });
       await queueStateSave();
       renderEngineList();
+    }
+  });
+}
+
+// --- OneNote Sync Progress Listener ---
+if (window.electronAPI?.onOneNoteSyncProgress) {
+  window.electronAPI.onOneNoteSyncProgress((progress) => {
+    // Update status text
+    if (onenoteStatus) {
+      onenoteStatus.textContent = progress.message || 'Syncing...';
+    }
+    
+    // Update progress bar and text
+    const progressFill = document.getElementById('onenote-progress-fill');
+    const progressText = document.getElementById('onenote-progress-text');
+    const logArea = document.getElementById('onenote-sync-log');
+    const minimizedProgress = document.getElementById('minimized-progress');
+    
+    // Calculate overall progress
+    let overallProgress = 0;
+    if (progress.totalPages > 0 || progress.totalSections > 0) {
+      const pageProgress = progress.totalPages > 0 ? (progress.processedPages / progress.totalPages) : 0;
+      const sectionProgress = progress.totalSections > 0 ? (progress.processedSections / progress.totalSections) : 0;
+      const sectionGroupProgress = progress.totalSectionGroups > 0 ? (progress.processedSectionGroups / progress.totalSectionGroups) : 0;
+      overallProgress = Math.round(((pageProgress + sectionProgress + sectionGroupProgress) / 3) * 100);
+    }
+    
+    if (progressFill) {
+      progressFill.style.width = `${Math.max(0, Math.min(100, overallProgress))}%`;
+    }
+    
+    if (progressText) {
+      if (progress.status === 'completed') {
+        progressText.textContent = `✅ Complete! ${progress.processedSections}/${progress.totalSections} sections, ${progress.processedPages}/${progress.totalPages} pages`;
+      } else if (progress.status === 'error') {
+        progressText.textContent = '❌ Sync failed';
+      } else {
+        progressText.textContent = `${overallProgress}% - ${progress.currentSection || progress.currentSectionGroup || 'Initializing...'}`;
+      }
+    }
+    
+    // Update minimized status if visible
+    if (minimizedProgress) {
+      if (progress.status === 'completed') {
+        minimizedProgress.textContent = `✅ Complete! ${overallProgress}%`;
+      } else if (progress.status === 'error') {
+        minimizedProgress.textContent = '❌ Failed';
+      } else {
+        minimizedProgress.textContent = `${overallProgress}% - ${progress.currentSection || progress.currentSectionGroup || 'Processing...'}`;
+      }
+    }
+    
+    // Add to scrollable log
+    if (logArea && progress.message) {
+      const timestamp = new Date().toLocaleTimeString();
+      const logEntry = `[${timestamp}] ${progress.message}\n`;
+      logArea.textContent += logEntry;
+      logArea.scrollTop = logArea.scrollHeight;
+      
+      // Limit log size to prevent memory issues
+      const lines = logArea.textContent.split('\n');
+      if (lines.length > 500) {
+        logArea.textContent = lines.slice(-400).join('\n');
+      }
+    }
+    
+    // Also log to automation log for history
+    appendAutomationLog(`🔄 OneNote Sync: ${progress.message}`);
+    
+    // Show progress percentages if available
+    if (progress.totalPages > 0) {
+      const pageProgress = Math.round((progress.processedPages / progress.totalPages) * 100);
+      const sectionProgress = Math.round((progress.processedSections / progress.totalSections) * 100);
+      appendAutomationLog(`📈 Progress: ${sectionProgress}% sections, ${pageProgress}% pages`);
+    }
+    
+    // Handle completion
+    if (progress.status === 'completed') {
+      appendAutomationLog(`🎉 OneNote sync completed successfully!`);
+      appendAutomationLog(`💾 Data saved to local onenote-data directory`);
+    } else if (progress.status === 'error') {
+      appendAutomationLog(`❌ OneNote sync error: ${progress.message}`, Date.now(), true);
     }
   });
 }

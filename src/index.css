@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes progress {
+  0% {
+    transform: scaleX(0);
+  }
+
+  50% {
+    transform: scaleX(0.5);
+  }
+
+  100% {
+    transform: scaleX(1);
+    transform-origin: right;
+  }
+}
+
+@layer base {
+  :root {
+    --color-background: 255 255 255;
+    --color-surface: 243 244 246;
+    --color-primary: 124 58 237;
+    --color-secondary: 167 139 250;
+    --color-accent: 124 58 237;
+    --color-accent-hover: 109 40 217;
+    --color-surface-light: 255 255 255;
+    --color-surface-hover: 229 231 235;
+    --color-text-main: 17 24 39;
+    --color-text-muted: 107 114 128;
+    --color-border: 229 231 235;
+  }
+
+  .dark {
+    --color-background: 8 12 26;
+    --color-surface: 17 21 38;
+    --color-primary: 124 58 237;
+    --color-secondary: 167 139 250;
+    --color-accent: 139 92 246;
+    --color-accent-hover: 124 58 237;
+    --color-surface-light: 31 41 55;
+    --color-surface-hover: 55 65 81;
+    --color-text-main: 255 255 255;
+    --color-text-muted: 156 163 175;
+    --color-border: 55 65 81;
+  }
+
+  body {
+    @apply bg-background text-text-main transition-colors duration-200;
+  }
+}
+
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-hover);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}

@@ -1,16 +1,18 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { exec } = require('child_process');
 const path = require('path');
+const fs = require('fs').promises;
+const os = require('os');
 const { runDownloader } = require('./download-gemini-images.js');
-const {
-  runChatGPTBatch,
-  runGeminiReplay,
-  extractPromptsFromChat,
-  saveExtractedPrompts,
-  extractPromptsFromResponse
-} = require('./automation-runner');
+const { runAutomation } = require('./automation-runner.js');
 const oneNoteService = require('./services/one-note-service');
 const { loadAutomationState, saveAutomationState, getDefaultState } = require('./automation-store');
+const localStore = require('./electron/store');
+const SyncManager = require('./electron/sync-manager');
+const LocalDatabase = require('./electron/local-database');
+
+const syncManager = new SyncManager(oneNoteService);
+const localDB = new LocalDatabase();
 
 let mainWindow;
 let isDownloading = false;
@@ -22,6 +24,14 @@ const automationControl = {
 };
 
 const makeId = (prefix = 'id') => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+
+// Helper function to sanitize file names
+function sanitizeFileName(name) {
+  return name
+    .replace(/[<>:"/\\|?*]/g, '_') // Replace invalid characters
+    .replace(/\s+/g, '_') // Replace spaces with underscores
+    .substring(0, 100); // Limit length
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -40,7 +50,29 @@ function createWindow() {
   });
 
   mainWindow.removeMenu();
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  const isDev = process.argv.includes('--dev');
+
+  if (isDev) {
+    console.log('🔌 Connecting to Vite dev server...');
+    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.webContents.openDevTools();
+  } else {
+    // Production
+    const indexPath = path.join(__dirname, 'dist', 'index.html');
+    console.log('📂 Loading production file:', indexPath);
+
+    // Check if file exists
+    fs.access(indexPath)
+      .then(() => {
+        console.log("✅ File exists");
+        mainWindow.loadFile(indexPath).catch(e => console.error("❌ Load file error:", e));
+      })
+      .catch(() => console.error("❌ File NOT found at:", indexPath));
+
+    // Open DevTools in production temporarily to see errors
+    // mainWindow.webContents.openDevTools();
+  }
 
   mainWindow.webContents.on('did-finish-load', () => {
     broadcastAutomationState();
@@ -207,7 +239,17 @@ ipcMain.handle('automation-control:set', async (event, { stage, action }) => {
   return control;
 });
 
-ipcMain.handle('automation-run', async (event, stageOrPayload, maybeOptions) => {
+ipcMain.handle('automation-run', async (event, payload) => {
+  try {
+    await runAutomation(event, payload, localDB);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+/* Old Handler Logic - Deprecated
+// ipcMain.handle('automation-run', async (event, stageOrPayload, maybeOptions) => {
   let stage, options;
   if (typeof stageOrPayload === 'string') {
     stage = stageOrPayload;
@@ -225,9 +267,25 @@ ipcMain.handle('automation-run', async (event, stageOrPayload, maybeOptions) => 
   const log = createAutomationLogger(sender);
   const sendStatus = status => emitAutomationStatus(sender, status);
 
-  const scripts = flattenScripts().filter(item => item.script && item.script.trim().length > 0);
+  let scripts;
+  if (options && options.script) {
+    // Single script run mode (from Editor)
+    log('⚡ Running in Single Script Mode (from Editor)');
+    scripts = [{
+      groupId: 'manual-run',
+      groupName: 'Manual Run',
+      sectionId: options.sectionId || 'manual-section',
+      sectionName: 'Manual Section',
+      subsectionId: options.pageId || makeId('manual-sub'),
+      scriptName: 'Current Script',
+      script: options.script
+    }];
+  } else {
+    // Bulk run mode (from State)
+    scripts = flattenScripts().filter(item => item.script && item.script.trim().length > 0);
+  }
 
-  log(`📊 Found ${flattenScripts().length} total scripts, ${scripts.length} with content`);
+  log(`📊 Found ${scripts.length} scripts to process`);
 
   if (stage === 'chatgpt' && scripts.length === 0) {
     throw new Error('Please add at least one script with content before running automation.');
@@ -415,6 +473,7 @@ ipcMain.handle('automation-run', async (event, stageOrPayload, maybeOptions) => 
     sendStatus({ stage, state: 'idle' });
   }
 });
+*/
 
 ipcMain.handle('select-folder', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -708,6 +767,8 @@ ipcMain.handle('onenote-login', async (event, { clientId, redirectUri }) => {
 ipcMain.handle('onenote-get-notebooks', async () => {
   try {
     const notebooks = await oneNoteService.fetchNotebooks();
+    // Save minimal notebook data to DB
+    localDB.saveNotebooks(notebooks);
     return { success: true, notebooks };
   } catch (error) {
     return { success: false, error: error.message };
@@ -720,8 +781,16 @@ ipcMain.handle('onenote-get-children', async (event, { parentId, parentType }) =
       ? await oneNoteService.fetchSectionGroups(parentId, parentType)
       : [];
     const sections = await oneNoteService.fetchSections(parentId, parentType);
+
+    // Save to local DB
+    if (sectionGroups.length) localDB.saveSectionGroups(sectionGroups, parentId, parentType);
+    if (sections.length) localDB.saveSections(sections, parentId, parentType);
+
     return { success: true, sectionGroups, sections };
   } catch (error) {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('log-error', `Fetch Children Failed: ${error.message}`);
+    }
     return { success: false, error: error.message };
   }
 });
@@ -731,8 +800,168 @@ ipcMain.handle('onenote-get-pages', async (event, { sectionId } = {}) => {
     const pages = sectionId
       ? await oneNoteService.fetchPages(sectionId)
       : await oneNoteService.fetchRecentPages();
+
+    // Save to local DB if we have a sectionId
+    if (sectionId && pages.length) {
+      localDB.savePages(pages, sectionId);
+    }
+
     return { success: true, pages };
   } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('onenote-get-page-content', async (event, { pageId }) => {
+  try {
+    // Try local first
+    const localContent = localStore.getPageContent(pageId);
+    if (localContent) return { success: true, content: localContent };
+
+    const content = await oneNoteService.fetchPageContent(pageId);
+    // Save to local store and DB
+    localStore.savePageContent(pageId, content);
+    localDB.savePageContent(pageId, content);
+    return { success: true, content };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+
+// --- Prompts Handlers ---
+
+ipcMain.handle('prompts-get', async (event, { pageId }) => {
+  try {
+    const prompts = localDB.getPrompts(pageId);
+    return { success: true, prompts };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('prompts-add', async (event, { pageId, content }) => {
+  try {
+    const id = localDB.addPrompt(pageId, content);
+    return { success: true, id };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('prompts-delete', async (event, { id }) => {
+  try {
+    localDB.deletePrompt(id);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('prompts-toggle-skip', async (event, { id, isSkipped }) => {
+  try {
+    localDB.updatePromptSkip(id, isSkipped);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('prompts-toggle-skip-all', async (event, { pageId, isSkipped }) => {
+  try {
+    localDB.updateAllPromptsSkip(pageId, isSkipped);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// --- Settings Handlers ---
+
+ipcMain.handle('settings-get', async (event, { key }) => {
+  try {
+    const value = localDB.getSetting(key);
+    return { success: true, value };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('settings-save', async (event, { key, value }) => {
+  try {
+    localDB.saveSetting(key, value);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('select-directory', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory']
+  });
+  if (!result.canceled && result.filePaths.length > 0) {
+    return { success: true, path: result.filePaths[0] };
+  }
+  return { success: false };
+});
+
+
+ipcMain.handle('onenote-get-local-data', async () => {
+  console.log('[Main] Fetching local data from SQLite DB');
+  try {
+    const notebooks = localDB.loadNotebooks();
+    console.log('[Main] Loaded from DB:', notebooks.length, 'notebooks');
+    const lastSync = localDB.getLastSyncTime();
+    return { notebooks, lastSyncTime: lastSync };
+  } catch (error) {
+    console.error('[Main] Failed to load from DB:', error);
+    return { notebooks: [], lastSyncTime: null };
+  }
+});
+
+ipcMain.handle('onenote-sync-all', async (event) => {
+  try {
+    const progressCallback = (msg) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('onenote-sync-progress', msg);
+      }
+    };
+
+    console.log('[Main] Starting sync...');
+    const updatedData = await syncManager.syncAll(progressCallback);
+
+    // Save to local database
+    console.log('[Main] Saving to local database...');
+    localDB.saveNotebooks(updatedData);
+
+    // Also save to old store for backward compatibility
+    localStore.saveData({ notebooks: updatedData });
+
+    console.log('[Main] Sync complete and saved to DB');
+    return { success: true, data: updatedData };
+  } catch (error) {
+    console.error('[Main] Sync failed:', error);
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('log-error', `Sync Failed: ${error.message}`);
+    }
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('onenote-sync-section', async (event, { sectionId }) => {
+  try {
+    const progressCallback = (status) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('onenote-sync-progress', status);
+      }
+    };
+    const pages = await oneNoteService.fetchSectionContent(sectionId, progressCallback);
+    return { success: true, pages };
+  } catch (error) {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('log-error', `Sync Section Failed: ${error.message}`);
+    }
     return { success: false, error: error.message };
   }
 });
@@ -778,13 +1007,63 @@ ipcMain.handle('onenote-sync-page', async (event, { pageId, sectionName, groupNa
   }
 });
 
-// Helper for recursive sync
-async function syncRecursively(parentId, parentType, targetGroupName) {
-  // 1. Fetch direct children
+// Helper for recursive sync with hard save
+async function syncRecursively(parentId, parentType, targetGroupName, progressCallback = null) {
+  // Initialize progress tracking
+  const progress = {
+    totalSections: 0,
+    processedSections: 0,
+    totalPages: 0,
+    processedPages: 0,
+    totalSectionGroups: 0,
+    processedSectionGroups: 0,
+    currentSection: '',
+    currentPage: '',
+    currentSectionGroup: '',
+    errors: []
+  };
+
+  // Create base directory for hard saves
+  const userDataPath = app.getPath('userData');
+  const onenoteDataPath = path.join(userDataPath, 'onenote-data');
+  const groupDataPath = path.join(onenoteDataPath, sanitizeFileName(targetGroupName));
+
+  try {
+    await fs.mkdir(onenoteDataPath, { recursive: true });
+    await fs.mkdir(groupDataPath, { recursive: true });
+  } catch (err) {
+    console.error('Failed to create directories for hard save:', err);
+  }
+
+  // 1. Fetch direct children and count totals
   const sections = await oneNoteService.fetchSections(parentId, parentType);
   const sectionGroups = (parentType === 'notebook' || parentType === 'sectionGroup')
     ? await oneNoteService.fetchSectionGroups(parentId, parentType)
     : [];
+
+  progress.totalSections = sections.length;
+  progress.totalSectionGroups = sectionGroups.length;
+
+  // Count total pages for progress tracking
+  for (const section of sections) {
+    try {
+      const pages = await oneNoteService.fetchPages(section.id);
+      progress.totalPages += pages.length;
+    } catch (e) {
+      console.warn(`Failed to count pages for section ${section.displayName}:`, e);
+    }
+
+    // Add longer delay to prevent rate limiting
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+
+  if (progressCallback) {
+    progressCallback({
+      ...progress,
+      status: 'starting',
+      message: `🔍 Starting sync: Found ${progress.totalSections} sections, ${progress.totalPages} pages, ${progress.totalSectionGroups} section groups in "${targetGroupName}"`
+    });
+  }
 
   // 2. Process Sections (containing pages)
   if (sections.length > 0) {
@@ -793,9 +1072,27 @@ async function syncRecursively(parentId, parentType, targetGroupName) {
     if (!group) {
       group = { id: makeId('group'), name: targetGroupName, sections: [] };
       automationState.sectionGroups.push(group);
+      if (progressCallback) {
+        progressCallback({
+          ...progress,
+          status: 'group_created',
+          message: `Created group: ${targetGroupName}`
+        });
+      }
     }
 
     for (const section of sections) {
+      progress.currentSection = section.displayName || section.name || "Untitled Section";
+      progress.processedSections++;
+
+      if (progressCallback) {
+        progressCallback({
+          ...progress,
+          status: 'processing_section',
+          message: `📁 Processing section ${progress.processedSections}/${progress.totalSections}: ${progress.currentSection}`
+        });
+      }
+
       // Check if section already exists in group to avoid duplicates? 
       // For now, let's create a NEW App Section for simplicity
       const sectionName = section.displayName || section.name || "Untitled Section";
@@ -806,58 +1103,412 @@ async function syncRecursively(parentId, parentType, targetGroupName) {
         collapsed: false
       };
 
+      // Create section directory for hard saves
+      const sectionDataPath = path.join(groupDataPath, sanitizeFileName(sectionName));
+      try {
+        await fs.mkdir(sectionDataPath, { recursive: true });
+      } catch (err) {
+        console.error(`Failed to create section directory: ${err}`);
+      }
+
       // Fetch pages for this section
       try {
         const pages = await oneNoteService.fetchPages(section.id);
-        for (const page of pages) {
-          const pageContent = await oneNoteService.fetchPageContent(page.id);
-          // Simple text extraction: remove HTML tags, keep newlines
-          // Ideally we use a proper converter, but regex is a start
-          // The user wants "as is", so maybe we leave some HTML? 
-          // For safety and editor compatibility: strip tags but keep structure
-          let cleanScript = pageContent
-            .replace(/<title>.*?<\/title>/g, '') // remove title
-            .replace(/<br>/g, '\n')
-            .replace(/<\/p>/g, '\n')
-            .replace(/<[^>]*>/g, '') // remove other tags
-            .replace(/&nbsp;/g, ' ')
-            .trim();
 
-          if (!cleanScript) cleanScript = "（Empty Page）";
-
-          newAppSection.subsections.push({
-            id: makeId('sub'),
-            name: page.title || "Untitled Page",
-            script: cleanScript
+        if (progressCallback) {
+          progressCallback({
+            ...progress,
+            status: 'fetching_pages',
+            message: `📄 Found ${pages.length} pages in section: ${sectionName}`
           });
         }
+
+        for (const page of pages) {
+          progress.currentPage = page.title || "Untitled Page";
+          progress.processedPages++;
+
+          if (progressCallback) {
+            progressCallback({
+              ...progress,
+              status: 'processing_page',
+              message: `📝 Syncing page ${progress.processedPages}/${progress.totalPages}: ${progress.currentPage}`
+            });
+          }
+
+          // Add longer delay between page requests to prevent rate limiting
+          await new Promise(resolve => setTimeout(resolve, 1500));
+
+          try {
+            const pageContent = await oneNoteService.fetchPageContent(page.id);
+            // Simple text extraction: remove HTML tags, keep newlines
+            // Ideally we use a proper converter, but regex is a start
+            // The user wants "as is", so maybe we leave some HTML? 
+            // For safety and editor compatibility: strip tags but keep structure
+            let cleanScript = pageContent
+              .replace(/<title>.*?<\/title>/g, '') // remove title
+              .replace(/<br>/g, '\n')
+              .replace(/<\/p>/g, '\n')
+              .replace(/<[^>]*>/g, '') // remove other tags
+              .replace(/&nbsp;/g, ' ')
+              .trim();
+
+            if (!cleanScript) cleanScript = "（Empty Page）";
+
+            // Hard save page content to file
+            const pageFileName = sanitizeFileName(page.title || "Untitled Page") + '.txt';
+            const pageFilePath = path.join(sectionDataPath, pageFileName);
+
+            try {
+              await fs.writeFile(pageFilePath, cleanScript, 'utf8');
+
+              // Save metadata
+              const metadata = {
+                id: page.id,
+                title: page.title,
+                lastModifiedDateTime: page.lastModifiedDateTime,
+                sectionId: section.id,
+                sectionName: sectionName,
+                groupName: targetGroupName,
+                filePath: pageFilePath,
+                syncedAt: new Date().toISOString()
+              };
+
+              const metadataPath = path.join(sectionDataPath, sanitizeFileName(page.title || "Untitled Page") + '.meta.json');
+              await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+
+              if (progressCallback) {
+                progressCallback({
+                  ...progress,
+                  status: 'page_saved',
+                  message: `💾 Saved page: ${progress.currentPage}`
+                });
+              }
+            } catch (saveErr) {
+              const errorMsg = `Failed to save page "${page.title}": ${saveErr.message}`;
+              progress.errors.push(errorMsg);
+              console.error(errorMsg);
+
+              if (progressCallback) {
+                progressCallback({
+                  ...progress,
+                  status: 'save_error',
+                  message: `❌ ${errorMsg}`
+                });
+              }
+            }
+
+            newAppSection.subsections.push({
+              id: makeId('sub'),
+              name: page.title || "Untitled Page",
+              script: cleanScript,
+              filePath: pageFilePath,
+              metadata: metadata
+            });
+
+            if (progressCallback) {
+              progressCallback({
+                ...progress,
+                status: 'page_synced',
+                message: `✅ Synced page: ${progress.currentPage}`
+              });
+            }
+          } catch (pageError) {
+            const errorMsg = `Failed to sync page "${page.title}": ${pageError.message}`;
+            progress.errors.push(errorMsg);
+            console.error(errorMsg);
+
+            if (progressCallback) {
+              progressCallback({
+                ...progress,
+                status: 'page_error',
+                message: `❌ ${errorMsg}`
+              });
+            }
+          }
+        }
       } catch (e) {
-        console.error(`Failed to sync pages for section ${sectionName}:`, e);
+        const errorMsg = `Failed to sync pages for section "${sectionName}": ${e.message}`;
+        progress.errors.push(errorMsg);
+        console.error(errorMsg);
+
+        if (progressCallback) {
+          progressCallback({
+            ...progress,
+            status: 'section_error',
+            message: `❌ ${errorMsg}`
+          });
+        }
       }
 
       if (newAppSection.subsections.length > 0) {
         group.sections.push(newAppSection);
+
+        if (progressCallback) {
+          progressCallback({
+            ...progress,
+            status: 'section_completed',
+            message: `✅ Completed section: ${sectionName} (${newAppSection.subsections.length} pages)`
+          });
+        }
       }
     }
+    // Add longer delay between section processing to prevent rate limiting
+    await new Promise(resolve => setTimeout(resolve, 3000));
   }
 
   // 3. Process Nested Section Groups (recurse)
   for (const sg of sectionGroups) {
+    progress.currentSectionGroup = sg.displayName || sg.name;
+    progress.processedSectionGroups++;
+
+    if (progressCallback) {
+      progressCallback({
+        ...progress,
+        status: 'processing_section_group',
+        message: `📂 Processing section group ${progress.processedSectionGroups}/${progress.totalSectionGroups}: ${progress.currentSectionGroup}`
+      });
+    }
+
     const sgName = sg.displayName || sg.name;
     // Flatten hierarchy for app: "Parent Group - Child Group"
     const newTargetGroupName = `${targetGroupName} - ${sgName}`;
-    await syncRecursively(sg.id, 'sectionGroup', newTargetGroupName);
+
+    try {
+      await syncRecursively(sg.id, 'sectionGroup', newTargetGroupName, progressCallback);
+
+      if (progressCallback) {
+        progressCallback({
+          ...progress,
+          status: 'section_group_completed',
+          message: `✅ Completed section group: ${sgName}`
+        });
+      }
+    } catch (sgError) {
+      const errorMsg = `Failed to sync section group "${sgName}": ${sgError.message}`;
+      progress.errors.push(errorMsg);
+      console.error(errorMsg);
+
+      if (progressCallback) {
+        progressCallback({
+          ...progress,
+          status: 'section_group_error',
+          message: `❌ ${errorMsg}`
+        });
+      }
+    }
+
+    // Add longer delay between section group processing
+    await new Promise(resolve => setTimeout(resolve, 5000));
   }
+
+  // Final progress update
+  if (progressCallback) {
+    progressCallback({
+      ...progress,
+      status: 'completed',
+      message: `✅ Sync completed! ${progress.processedSections}/${progress.totalSections} sections, ${progress.processedPages}/${progress.totalPages} pages, ${progress.processedSectionGroups}/${progress.totalSectionGroups} section groups. ${progress.errors.length} errors.`
+    });
+  }
+
+  return progress;
 }
 
-ipcMain.handle('onenote-sync-hierarchy', async (event, { parentId, parentType, name }) => {
+ipcMain.handle('onenote-sync-complete-notebook', async (event, { notebookId, notebookName }) => {
   try {
-    const rootName = name || 'Imported Notebook';
-    await syncRecursively(parentId, parentType, rootName);
+    const rootName = notebookName || 'Imported Notebook';
+
+    // Send initial status to renderer
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('onenote-sync-progress', {
+        status: 'starting',
+        message: `🔍 Starting complete notebook sync for: ${rootName}`
+      });
+    }
+
+    // Progress callback to send updates to renderer
+    const progressCallback = (progress) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('onenote-sync-progress', progress);
+      }
+    };
+
+    const finalProgress = await syncCompleteNotebook(notebookId, rootName, progressCallback);
     saveAndBroadcastAutomationState();
-    return { success: true };
+
+    return {
+      success: true,
+      progress: finalProgress
+    };
   } catch (e) {
-    console.error("Sync error:", e);
+    console.error("Complete notebook sync error:", e);
+
+    // Send error to renderer
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('onenote-sync-progress', {
+        status: 'error',
+        message: `❌ Sync failed: ${e.message}`
+      });
+    }
+
     return { success: false, error: e.message };
   }
 });
+
+// NEW: Complete notebook sync function
+async function syncCompleteNotebook(notebookId, notebookName, progressCallback = null) {
+  const progress = {
+    totalSections: 0,
+    processedSections: 0,
+    totalPages: 0,
+    processedPages: 0,
+    totalSectionGroups: 0,
+    processedSectionGroups: 0,
+    currentSection: '',
+    currentPage: '',
+    currentSectionGroup: '',
+    errors: []
+  };
+
+  // Create base directory for hard saves
+  const userDataPath = app.getPath('userData');
+  const onenoteDataPath = path.join(userDataPath, 'onenote-data');
+  const notebookDataPath = path.join(onenoteDataPath, sanitizeFileName(notebookName));
+
+  try {
+    await fs.mkdir(onenoteDataPath, { recursive: true });
+    await fs.mkdir(notebookDataPath, { recursive: true });
+  } catch (err) {
+    console.error('Failed to create directories for hard save:', err);
+  }
+
+  if (progressCallback) {
+    progressCallback({
+      ...progress,
+      status: 'fetching_hierarchy',
+      message: `🚀 Starting mega-batch download of entire notebook...`
+    });
+  }
+
+  // Fetch complete hierarchy using single mega-batch request
+  const hierarchy = await oneNoteService.fetchEntireNotebookInOneRequest(notebookId, (progress) => {
+    // Send progress updates to UI
+    if (progressCallback) {
+      progressCallback({
+        ...progress,
+        ...progress,
+        status: progress.status,
+        message: progress.message
+      });
+    }
+  });
+
+  progress.totalSections = hierarchy.sections.length;
+  progress.totalSectionGroups = hierarchy.sectionGroups.length;
+  progress.totalPages = hierarchy.pages.length;
+
+  if (progressCallback) {
+    progressCallback({
+      ...progress,
+      status: 'hierarchy_fetched',
+      message: `🔍 Found complete hierarchy: ${progress.totalSections} sections, ${progress.totalPages} pages, ${progress.totalSectionGroups} section groups`
+    });
+  }
+
+  // Create a map of groups and sections for hierarchy reconstruction
+  const groupMap = new Map();
+  const sectionMap = new Map();
+
+  // 1. Create Notebook Root in automationState
+  let rootNode = automationState.sectionGroups.find(g => g.metadata?.id === notebookId);
+  if (!rootNode) {
+    rootNode = {
+      id: makeId('group'),
+      name: notebookName,
+      sections: [],
+      childGroups: [],
+      metadata: { id: notebookId, type: 'notebook' }
+    };
+    automationState.sectionGroups.push(rootNode);
+  } else {
+    // Clear old children but keep reference
+    rootNode.sections = [];
+    rootNode.childGroups = [];
+  }
+  groupMap.set(notebookId, rootNode);
+
+  // 2. Initialize Section Groups in the map
+  for (const sg of hierarchy.sectionGroups) {
+    groupMap.set(sg.id, {
+      id: makeId('group'),
+      name: sg.displayName,
+      sections: [],
+      childGroups: [],
+      metadata: { id: sg.id, type: 'sectionGroup' }
+    });
+  }
+
+  // 3. Reconstruct Groups Hierarchy
+  for (const sg of hierarchy.sectionGroups) {
+    const node = groupMap.get(sg.id);
+    const parentId = sg.parentGroupId || notebookId;
+    const parentNode = groupMap.get(parentId);
+    if (parentNode) {
+      if (!parentNode.childGroups) parentNode.childGroups = [];
+      parentNode.childGroups.push(node);
+    }
+  }
+
+  // 4. Process all sections and place them in the correct level
+  for (const section of hierarchy.sections) {
+    const sectionName = section.displayName || section.name || "Untitled Section";
+    const parentId = section.parentGroupId || notebookId;
+    const parentNode = groupMap.get(parentId);
+
+    if (!parentNode) continue;
+
+    const newAppSection = {
+      id: makeId('sec'),
+      name: sectionName,
+      subsections: [],
+      collapsed: false,
+      metadata: { id: section.id, type: 'section' }
+    };
+
+    const sectionPages = hierarchy.pages.filter(p => p.sectionId === section.id);
+
+    // Add pages
+    for (const page of sectionPages) {
+      newAppSection.subsections.push({
+        id: makeId('sub'),
+        name: page.title || "Untitled Page",
+        script: `Downloaded from OneNote: ${page.title}`,
+        filePath: path.join(notebookDataPath, sanitizeFileName(sectionName), sanitizeFileName(page.title || "Untitled Page") + '.txt'),
+        metadata: {
+          id: page.id,
+          title: page.title,
+          lastModifiedDateTime: page.lastModifiedDateTime,
+          sectionId: section.id,
+          sectionName: sectionName,
+          notebookName: notebookName,
+          syncedAt: new Date().toISOString()
+        }
+      });
+    }
+
+    parentNode.sections.push(newAppSection);
+  }
+
+  // Save and broadcast state after each section is added
+  saveAndBroadcastAutomationState();
+
+  // Final progress update
+  if (progressCallback) {
+    progressCallback({
+      ...progress,
+      status: 'completed',
+      message: `🎉 Complete notebook sync finished! ${progress.processedSections}/${progress.totalSections} sections, ${progress.processedPages}/${progress.totalPages} pages, ${progress.totalSectionGroups} section groups. ${progress.errors.length} errors.`
+    });
+  }
+
+  return progress;
+}
