@@ -7,22 +7,28 @@ const LogPanel = ({ className }) => {
     const bottomRef = useRef(null);
 
     useEffect(() => {
-        // Subscribe to logs
-        const unsubscribe = electron.onLogMessage((message) => {
+        // Subscribe to general logs
+        const cleanupLog = electron.onLogMessage((message) => {
             setLogs(prev => [...prev, { text: message.message || message, type: 'info', timestamp: Date.now() }]);
         });
 
-        const unsubscribeError = electron.onLogError((message) => {
+        const cleanupError = electron.onLogError((message) => {
             setLogs(prev => [...prev, { text: `ERROR: ${message.message || message}`, type: 'error', timestamp: Date.now() }]);
         });
 
-        // Also listen for errors (assuming existing IPC sends log-error)
-        // Note: We need to verify if electron.js exposes onLogError. 
-        // If not, we should update it. For now, we assume standard log stream.
+        // Subscribe to automation logs (New)
+        // Check if onAutomationLog exists in service layer
+        let cleanupAutoLog = () => { };
+        if (electron.onAutomationLog) {
+            cleanupAutoLog = electron.onAutomationLog((message) => {
+                setLogs(prev => [...prev, { text: message, type: 'automation', timestamp: Date.now() }]);
+            });
+        }
 
         return () => {
-            // Cleanup if possible (Electron IPC listeners usually stay unless removed)
-            // Standard practice would be removeListener if exposed
+            if (cleanupLog) cleanupLog();
+            if (cleanupError) cleanupError();
+            if (cleanupAutoLog) cleanupAutoLog();
         };
     }, []);
 

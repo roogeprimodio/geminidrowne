@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const os = require('os');
 const { runDownloader } = require('./download-gemini-images.js');
-const { runAutomation } = require('./automation-runner.js');
+const { runAutomation, setAutomationControl } = require('./automation-runner.js');
 const oneNoteService = require('./services/one-note-service');
 const { loadAutomationState, saveAutomationState, getDefaultState } = require('./automation-store');
 const localStore = require('./electron/store');
@@ -214,8 +214,24 @@ ipcMain.handle('automation-state:reset-all', async () => {
   return automationState;
 });
 
-ipcMain.handle('automation-control:set', async (event, { stage, action }) => {
+ipcMain.handle('automation-control:set', async (event, payload) => {
+  const { stage, action } = payload;
+
+  // New Global Control Pattern (used by Gemini V2)
+  if (!stage) {
+    if (typeof setAutomationControl === 'function') {
+      setAutomationControl(action);
+      return { success: true };
+    }
+  }
+
+  // Legacy Pattern (with stage)
   if (!automationControl[stage]) {
+    // If exact stage unknown, just try global control as fallback
+    if (typeof setAutomationControl === 'function') {
+      setAutomationControl(action);
+      return { success: true };
+    }
     throw new Error('Unknown automation stage.');
   }
 
@@ -906,6 +922,16 @@ ipcMain.handle('select-directory', async () => {
   return { success: false };
 });
 
+ipcMain.handle('open-folder', async (event, { path: folderPath }) => {
+  try {
+    const fullPath = path.resolve(folderPath);
+    await require('electron').shell.openPath(fullPath);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 
 ipcMain.handle('onenote-get-local-data', async () => {
   console.log('[Main] Fetching local data from SQLite DB');
@@ -1512,3 +1538,46 @@ async function syncCompleteNotebook(notebookId, notebookName, progressCallback =
 
   return progress;
 }
+
+
+
+ipcMain.handle('scan-page-images', async (event, { pageId }) => {
+  if (!pageId) return { success: false, assets: [] };
+
+  try {
+    const saveRoot = localDB.getSetting('image_save_path');
+    if (!saveRoot) return { success: false, assets: [] };
+
+    const hierarchyPath = localDB.getPageHierarchyPath(pageId);
+
+    // Sanitize path parts
+    const sanitizedPath = hierarchyPath.map(part =>
+      // Use the same helper function defined earlier in main.js
+      part.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, '_').substring(0, 50)
+    );
+
+    const pageDir = path.join(saveRoot, ...sanitizedPath);
+
+    try {
+      await fs.access(pageDir);
+    } catch {
+      return { success: true, assets: [] };
+    }
+
+    const files = await fs.readdir(pageDir);
+    const assets = files
+      .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f))
+      .map(f => ({
+        pageId,
+        filePath: path.join(pageDir, f),
+        filename: f,
+        promptId: 'restored'
+      }));
+
+    return { success: true, assets };
+
+  } catch (error) {
+    console.error('Scan images error:', error);
+    return { success: false, error: error.message, assets: [] };
+  }
+});

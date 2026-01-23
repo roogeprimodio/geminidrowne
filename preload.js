@@ -37,14 +37,41 @@ contextBridge.exposeInMainWorld('electronAPI', {
   settingsGet: (key) => ipcRenderer.invoke('settings-get', { key }),
   settingsSave: (payload) => ipcRenderer.invoke('settings-save', payload),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
-  onAutomationState: callback =>
-    ipcRenderer.on('automation-state', (_, state) => callback(state)),
-  onAutomationLog: callback =>
-    ipcRenderer.on('automation-log', (_, payload) => callback(payload)),
-  onAutomationRunStatus: callback =>
-    ipcRenderer.on('automation-run-status', (_, payload) => callback(payload)),
-  onEngineStatus: callback =>
-    ipcRenderer.on('automation-engine-status', (_, payload) => callback(payload)),
-  onOneNoteSyncProgress: callback =>
-    ipcRenderer.on('onenote-sync-progress', (_, progress) => callback(progress))
+  openFolder: (path) => ipcRenderer.invoke('open-folder', { path }),
+  scanPageImages: (pageId) => ipcRenderer.invoke('scan-page-images', { pageId }),
+  onAutomationState: callback => {
+    const subscription = (_, state) => callback(state);
+    ipcRenderer.on('automation-state', subscription);
+    return () => ipcRenderer.removeListener('automation-state', subscription);
+  },
+  onAutomationLog: callback => {
+    const subscription = (_, payload) => callback(payload);
+    ipcRenderer.on('automation-log', subscription);
+    return () => ipcRenderer.removeListener('automation-log', subscription);
+  },
+  onAutomationRunStatus: callback => {
+    const subscription = (_, payload) => callback(payload);
+    ipcRenderer.on('automation-run-status', subscription);
+    return () => ipcRenderer.removeListener('automation-run-status', subscription);
+  },
+  onEngineStatus: callback => {
+    const subscription = (_, payload) => callback(payload);
+    ipcRenderer.on('automation-engine-status', subscription);
+    return () => ipcRenderer.removeListener('automation-engine-status', subscription);
+  },
+  onAutomationAssetCreated: callback => {
+    const subscription = (_, payload) => callback(payload);
+    ipcRenderer.on('automation-asset-created', subscription);
+    return () => ipcRenderer.removeListener('automation-asset-created', subscription);
+  },
+  onPromptsUpdated: callback => {
+    const subscription = (_, payload) => callback(payload);
+    ipcRenderer.on('prompts-updated', subscription);
+    return () => ipcRenderer.removeListener('prompts-updated', subscription);
+  },
+  onOneNoteSyncProgress: callback => {
+    const subscription = (_, progress) => callback(progress);
+    ipcRenderer.on('onenote-sync-progress', subscription);
+    return () => ipcRenderer.removeListener('onenote-sync-progress', subscription);
+  }
 });

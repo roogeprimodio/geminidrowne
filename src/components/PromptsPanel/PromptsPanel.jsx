@@ -13,6 +13,17 @@ const PromptsPanel = ({ page, breadcrumb, width, setWidth, onClose }) => {
         if (page?.id) {
             loadPrompts();
         }
+
+        // Listen for automation-driven updates
+        const unlisten = window.electronAPI.onPromptsUpdated((payload) => {
+            if (payload.pageId === page?.id) {
+                loadPrompts();
+            }
+        });
+
+        return () => {
+            if (typeof unlisten === 'function') unlisten();
+        };
     }, [page?.id]);
 
     const loadPrompts = async () => {
@@ -145,8 +156,8 @@ const PromptsPanel = ({ page, breadcrumb, width, setWidth, onClose }) => {
                     <button
                         onClick={() => handleToggleSkipAll(!areAllSkipped)}
                         className={`text-xs px-2 py-1 rounded flex items-center gap-1 transition-colors ${areAllSkipped
-                                ? 'bg-primary/10 text-primary hover:bg-primary/20'
-                                : 'bg-surface-hover text-text-muted hover:text-text-main'
+                            ? 'bg-primary/10 text-primary hover:bg-primary/20'
+                            : 'bg-surface-hover text-text-muted hover:text-text-main'
                             }`}
                     >
                         {areAllSkipped ? <ToggleRight size={14} /> : <ToggleLeft size={14} />}

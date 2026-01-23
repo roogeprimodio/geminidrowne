@@ -23,6 +23,7 @@ export const electron = {
 
     // Platform
     selectFolder: () => isElectron ? window.electronAPI.selectFolder() : Promise.resolve(null),
+    openFolder: (path) => isElectron ? window.electronAPI.openFolder(path) : Promise.resolve({ success: false }),
     onLogMessage: (callback) => {
         if (isElectron) {
             window.electronAPI.onLogMessage(callback);
@@ -31,4 +32,11 @@ export const electron = {
         }
     },
     onLogError: (callback) => isElectron && window.electronAPI.onLogError(callback),
+    onAutomationLog: (callback) => isElectron && window.electronAPI.onAutomationLog(callback), // Add this
+    onAutomationAssetCreated: (callback) => isElectron && window.electronAPI.onAutomationAssetCreated(callback),
+    setAutomationControl: (payload) => isElectron ? window.electronAPI.setAutomationControl(payload) : Promise.resolve({ success: true }),
+
+    // Settings
+    settingsGet: (key) => isElectron ? window.electronAPI.settingsGet(key) : Promise.resolve({ success: true, value: '' }),
+    settingsSave: (payload) => isElectron ? window.electronAPI.settingsSave(payload) : Promise.resolve({ success: true }),
 };

@@ -1,13 +1,33 @@
-import React, { useState, useEffect } from 'react';
-import { Play, Clipboard, Save, MoreVertical, BookOpen, Edit, FileText, Code } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Play, Clipboard, Save, MoreVertical, BookOpen, Edit, FileText, Code, Image, Pause, Square } from 'lucide-react';
 import { extractScriptFromHTML } from '../../utils/scriptExtractor';
+import RunConfiguration from '../RunConfiguration/RunConfiguration';
+import GalleryView from '../GalleryView/GalleryView';
 
 const Editor = ({ page, isLoading, onRunAutomation }) => {
-    // viewMode: 'formatted' | 'script' | 'source'
+    // viewMode: 'formatted' | 'script' | 'source' | 'gallery'
     const [viewMode, setViewMode] = useState('formatted');
     const [content, setContent] = useState('');
     const [extractedScript, setExtractedScript] = useState('');
     const [zoom, setZoom] = useState(100);
+
+    // Automation State
+    const [isRunConfigOpen, setIsRunConfigOpen] = useState(false);
+    const [runButtonRef, setRunButtonRef] = useState(null);
+    const [automationStatus, setAutomationStatus] = useState('idle'); // idle, running, paused
+    const [generatedAssets, setGeneratedAssets] = useState([]);
+
+    // Listen for Automation State (Idle/Running/Error)
+    useEffect(() => {
+        const unlisten = window.electronAPI.onAutomationState((state) => {
+            if (state === 'idle' || state === 'error') {
+                setAutomationStatus('idle');
+            } else if (state === 'running') {
+                setAutomationStatus('running');
+            }
+        });
+        return () => unlisten && unlisten();
+    }, []);
 
     useEffect(() => {
         if (page) {
@@ -15,14 +35,50 @@ const Editor = ({ page, isLoading, onRunAutomation }) => {
             if (viewMode === 'script') {
                 setExtractedScript(extractScriptFromHTML(page.content));
             }
+            // Load existing assets from disk
+            window.electronAPI.scanPageImages(page.id).then(result => {
+                if (result.success) {
+                    setGeneratedAssets(result.assets || []);
+                } else {
+                    setGeneratedAssets([]);
+                }
+            });
         }
     }, [page, viewMode]);
 
+    // Listen for Asset Updates
+    useEffect(() => {
+        const unlisten = window.electronAPI.onAutomationAssetCreated((payload) => {
+            if (payload.pageId === page?.id) {
+                setGeneratedAssets(prev => [...prev, payload]);
+            }
+        });
+        return () => unlisten && unlisten();
+    }, [page?.id]);
+
+    const handleRunChatGPT = () => {
+        setAutomationStatus('running');
+        onRunAutomation('chatgpt');
+    };
+
+    const handleRunGemini = (config) => {
+        setIsRunConfigOpen(false);
+        setAutomationStatus('running');
+        setViewMode('gallery'); // Switch to Gallery to see progress
+        onRunAutomation('gemini', { ...config });
+    };
+
+    const handleControlAction = async (action) => {
+        if (action === 'pause') setAutomationStatus('paused');
+        if (action === 'resume') setAutomationStatus('running');
+        if (action === 'stop') setAutomationStatus('idle');
+
+        await window.electronAPI.setAutomationControl({ action });
+    };
+
     // Basic sanitization/cleanup of OneNote HTML to make it look decent
-    // This is a simple pass; robust sanitization should be done if security is a concern
     const getFormattedContent = () => {
         if (!content) return { __html: '<p class="text-text-muted italic">No content available.</p>' };
-        // Clean up some common OneNote weirdness if necessary, or just render as is
         return { __html: content };
     };
 
@@ -53,53 +109,88 @@ const Editor = ({ page, isLoading, onRunAutomation }) => {
         );
     }
 
-
-
     const handleZoomIn = () => setZoom(prev => Math.min(prev + 10, 200));
     const handleZoomOut = () => setZoom(prev => Math.max(prev - 10, 50));
     const handleResetZoom = () => setZoom(100);
 
     return (
         <div className="flex-1 flex flex-col h-full bg-background transition-colors duration-300">
+            {/* Run Configuration Modal */}
+            <RunConfiguration
+                isOpen={isRunConfigOpen}
+                onClose={() => setIsRunConfigOpen(false)}
+                onRun={handleRunGemini}
+                position={runButtonRef ? runButtonRef.getBoundingClientRect() : null}
+            />
+
             {/* Header */}
             <div className="h-14 border-b border-border flex items-center justify-between px-6 bg-surface/20">
-                {/* ... header content ... */}
                 <div className="flex items-center gap-4">
                     <h1 className="font-semibold text-lg truncate max-w-lg text-text-main" title={page.title}>
                         {page.title}
                     </h1>
                 </div>
-                {/* ... action buttons ... */}
+
+                {/* Action Buttons */}
                 <div className="flex items-center gap-2">
-                    {/* Zoom Controls */}
                     <div className="flex items-center bg-surface-light rounded mx-2 border border-border">
-                        <button onClick={handleResetZoom} className="text-xs text-text-muted hover:text-text-main px-2 py-1.5 border-r border-border">
-                            {zoom}%
-                        </button>
-                        <button onClick={handleZoomOut} className="p-1.5 text-text-muted hover:text-text-main border-r border-border">
-                            -
-                        </button>
-                        <button onClick={handleZoomIn} className="p-1.5 text-text-muted hover:text-text-main">
-                            +
-                        </button>
+                        <button onClick={handleResetZoom} className="text-xs text-text-muted hover:text-text-main px-2 py-1.5 border-r border-border">{zoom}%</button>
+                        <button onClick={handleZoomOut} className="p-1.5 text-text-muted hover:text-text-main border-r border-border">-</button>
+                        <button onClick={handleZoomIn} className="p-1.5 text-text-muted hover:text-text-main">+</button>
                     </div>
 
                     <button
                         className="flex items-center gap-2 px-3 py-1.5 bg-green-600/10 text-green-500 hover:bg-green-600/20 border border-green-600/20 rounded text-sm transition-colors"
-                        onClick={() => onRunAutomation('chatgpt')}
+                        onClick={handleRunChatGPT}
                         title="Run ChatGPT Automation"
                     >
                         <Play size={14} />
                         <span className="hidden xl:inline">ChatGPT</span>
                     </button>
-                    <button
-                        className="flex items-center gap-2 px-3 py-1.5 bg-blue-600/10 text-blue-500 hover:bg-blue-600/20 border border-blue-600/20 rounded text-sm transition-colors"
-                        onClick={() => onRunAutomation('gemini')}
-                        title="Run Gemini Automation"
-                    >
-                        <Play size={14} />
-                        <span className="hidden xl:inline">Gemini</span>
-                    </button>
+
+                    {/* Dynamic Gemini Controls */}
+                    {automationStatus === 'idle' ? (
+                        <div ref={setRunButtonRef}>
+                            <button
+                                className="flex items-center gap-2 px-3 py-1.5 bg-blue-600/10 text-blue-500 hover:bg-blue-600/20 border border-blue-600/20 rounded text-sm transition-colors"
+                                onClick={() => setIsRunConfigOpen(true)}
+                                title="Run Gemini Automation"
+                            >
+                                <Play size={14} />
+                                <span className="hidden xl:inline">Gemini</span>
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="flex items-center gap-1 bg-surface-light border border-border rounded-lg p-1 animate-in fade-in slide-in-from-right-4 duration-300">
+                            {automationStatus === 'running' ? (
+                                <button
+                                    onClick={() => handleControlAction('pause')}
+                                    className="p-1.5 text-yellow-500 hover:bg-surface-hover rounded"
+                                    title="Pause Automation"
+                                >
+                                    <Pause size={16} />
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={() => handleControlAction('resume')}
+                                    className="p-1.5 text-green-500 hover:bg-surface-hover rounded"
+                                    title="Resume Automation"
+                                >
+                                    <Play size={16} />
+                                </button>
+                            )}
+                            <button
+                                onClick={() => handleControlAction('stop')}
+                                className="p-1.5 text-red-500 hover:bg-surface-hover rounded"
+                                title="Stop Automation"
+                            >
+                                <Square size={16} />
+                            </button>
+                            <span className="text-xs text-text-muted px-2 border-l border-border/50">
+                                {automationStatus === 'running' ? 'Running...' : 'Paused'}
+                            </span>
+                        </div>
+                    )}
 
                     <div className="w-px h-6 bg-border mx-1" />
                     <button className="p-1.5 text-text-muted hover:text-text-main hover:bg-surface-hover rounded">
@@ -113,8 +204,8 @@ const Editor = ({ page, isLoading, onRunAutomation }) => {
                 <button
                     onClick={() => setViewMode('formatted')}
                     className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${viewMode === 'formatted'
-                            ? 'border-primary text-primary font-medium bg-surface/30'
-                            : 'border-transparent text-text-muted hover:text-text-main hover:bg-surface/10'
+                        ? 'border-primary text-primary font-medium bg-surface/30'
+                        : 'border-transparent text-text-muted hover:text-text-main hover:bg-surface/10'
                         }`}
                 >
                     <BookOpen size={16} /> Original Page
@@ -122,17 +213,27 @@ const Editor = ({ page, isLoading, onRunAutomation }) => {
                 <button
                     onClick={() => setViewMode('script')}
                     className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${viewMode === 'script'
-                            ? 'border-primary text-primary font-medium bg-surface/30'
-                            : 'border-transparent text-text-muted hover:text-text-main hover:bg-surface/10'
+                        ? 'border-primary text-primary font-medium bg-surface/30'
+                        : 'border-transparent text-text-muted hover:text-text-main hover:bg-surface/10'
                         }`}
                 >
                     <FileText size={16} /> Extracted Script
                 </button>
                 <button
+                    onClick={() => setViewMode('gallery')}
+                    className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${viewMode === 'gallery'
+                        ? 'border-primary text-primary font-medium bg-surface/30'
+                        : 'border-transparent text-text-muted hover:text-text-main hover:bg-surface/10'
+                        }`}
+                >
+                    <Image size={16} /> Gallery
+                    {generatedAssets.length > 0 && <span className="ml-1 text-[10px] bg-primary/20 text-primary px-1.5 rounded-full">{generatedAssets.length}</span>}
+                </button>
+                <button
                     onClick={() => setViewMode('source')}
                     className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${viewMode === 'source'
-                            ? 'border-primary text-primary font-medium bg-surface/30'
-                            : 'border-transparent text-text-muted hover:text-text-main hover:bg-surface/10'
+                        ? 'border-primary text-primary font-medium bg-surface/30'
+                        : 'border-transparent text-text-muted hover:text-text-main hover:bg-surface/10'
                         }`}
                 >
                     <Code size={16} /> HTML Source
@@ -141,7 +242,22 @@ const Editor = ({ page, isLoading, onRunAutomation }) => {
 
             {/* Content Area */}
             <div className="flex-1 overflow-hidden relative bg-background/50">
-                {viewMode === 'source' ? (
+                {viewMode === 'gallery' ? (
+                    <GalleryView
+                        assets={generatedAssets}
+                        onOpenFolder={() => {
+                            if (generatedAssets.length > 0) {
+                                const firstFile = generatedAssets[0].filePath;
+                                // Handle both Windows and Unix separators for robustness
+                                const lastSep = Math.max(firstFile.lastIndexOf('/'), firstFile.lastIndexOf('\\'));
+                                if (lastSep > -1) {
+                                    const dir = firstFile.substring(0, lastSep);
+                                    window.electronAPI.openFolder(dir);
+                                }
+                            }
+                        }}
+                    />
+                ) : viewMode === 'source' ? (
                     <textarea
                         className="w-full h-full bg-transparent p-8 resize-none focus:outline-none font-mono text-xs leading-relaxed text-text-muted overflow-auto"
                         value={content}

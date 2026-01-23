@@ -327,8 +327,14 @@ function App() {
         return path;
     };
 
-    const handleRunAutomation = async (type) => {
+    const handleRunAutomation = async (type, options = {}) => {
         if (!selectedPage) return;
+
+        // Auto-open relevant panels
+        setIsLogPanelOpen(true);
+        if (type === 'chatgpt') {
+            setIsPromptsPanelOpen(true);
+        }
 
         let basePrompt = '';
         if (type === 'chatgpt') {
@@ -336,8 +342,6 @@ function App() {
                 const result = await electron.settingsGet('base_prompt');
                 if (result.success && result.value) {
                     basePrompt = result.value;
-                } else {
-                    // warning logger?
                 }
             } catch (e) { console.error('Failed to fetch base prompt', e); }
         }
@@ -349,7 +353,8 @@ function App() {
             pageId: selectedPage.id,
             page: selectedPage,
             basePrompt,
-            extractedScript
+            extractedScript,
+            ...options // Pass options like aspectRatio
         });
     };
 
