@@ -360,18 +360,31 @@ async function saveAllBatchedImages(page, prompts, saveDir, log, pageId, options
 
       if (!promptContainer) return { error: 'Prompt text not found in chat' };
 
-      // Find all images
+      // 1. Try finding detailed image container first (more robust)
+      // Gemini usually wraps generated images in specific containers or with specific attributes
+      // Strategy: Look for images that are large enough and are *visually* near the prompt or in the latest response block.
+
       const allImages = Array.from(document.querySelectorAll('img[src^="https"]'))
-        .filter(img => img.naturalWidth > 100);
+        .filter(img => {
+          const rect = img.getBoundingClientRect();
+          // Filter out tiny icons/avatars. Generated images are usually substantial.
+          return rect.width > 200 && rect.height > 200;
+        });
 
       // Filter images that appear AFTER this prompt in the DOM
       const imagesAfter = allImages.filter(img => {
         return (promptContainer.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING);
       });
 
-      if (imagesAfter.length === 0) return { error: 'No images found after prompt' };
+      if (imagesAfter.length === 0) {
+        // Fallback: If we can't find it "after" (nesting issues), look for the very last large image added to the DOM
+        if (allImages.length > 0) {
+          return { src: allImages[allImages.length - 1].src };
+        }
+        return { error: 'No images found after prompt' };
+      }
 
-      // The FIRST image after the prompt is the one belonging to it.
+      // The FIRST large image after the prompt is likely the one.
       return { src: imagesAfter[0].src };
 
     }, { searchText: prompt.content });

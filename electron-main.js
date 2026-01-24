@@ -830,15 +830,71 @@ ipcMain.handle('onenote-get-pages', async (event, { sectionId } = {}) => {
 
 ipcMain.handle('onenote-get-page-content', async (event, { pageId }) => {
   try {
-    // Try local first
-    const localContent = localStore.getPageContent(pageId);
-    if (localContent) return { success: true, content: localContent };
+    // 1. Get Local Content
+    let localPage = localDB.getPages ? localDB.getPage(pageId) : null;
+    // Fallback if getPage doesn't separate exist (we added getPages, not getPage, checking store...)
+    if (!localPage) {
+      const content = localStore.getPageContent(pageId);
+      if (content) localPage = { id: pageId, content, lastModifiedDateTime: null };
+    }
 
-    const content = await oneNoteService.fetchPageContent(pageId);
-    // Save to local store and DB
-    localStore.savePageContent(pageId, content);
-    localDB.savePageContent(pageId, content);
-    return { success: true, content };
+    // 2. Validate Local Content
+    let needsSync = false;
+    let reason = '';
+
+    if (!localPage || !localPage.content) {
+      needsSync = true;
+      reason = 'missing_local';
+    } else {
+      const content = localPage.content;
+      const isContentEmpty = !content || content.trim().length === 0;
+      const isErrorParams = content.startsWith('Failed to load content');
+      const hasHtmlStructure = content.includes('<html') || content.includes('<body') || content.includes('<div') || content.includes('<p');
+      const isTooShort = content.length < 200;
+      const isLiteralUndefined = content === 'undefined' || content === 'null';
+
+      // Grid Check
+      const textOnly = content.replace(/<[^>]*>/g, '').replace(/\s+/g, '').trim();
+      const isEmptyLayout = textOnly.length < 10;
+
+      if (isContentEmpty || isErrorParams || isLiteralUndefined || (!hasHtmlStructure && isTooShort) || isEmptyLayout) {
+        needsSync = true;
+        reason = 'invalid_content';
+      }
+    }
+
+    // 3. Check for Updates (Metadata) - Only if content looks valid locally to catch updates
+    if (!needsSync) {
+      try {
+        const remoteMeta = await oneNoteService.getPageMetadata(pageId);
+        // If local date is missing or older than remote
+        if (!localPage.lastModifiedDateTime || (remoteMeta.lastModifiedDateTime > localPage.lastModifiedDateTime)) {
+          needsSync = true;
+          reason = 'outdated';
+          console.log(`[SmartPage] Page ${pageId} is outdated. Local: ${localPage.lastModifiedDateTime}, Remote: ${remoteMeta.lastModifiedDateTime}`);
+        }
+      } catch (err) {
+        console.warn(`[SmartPage] Failed to check metadata for ${pageId}, using local if available.`, err);
+      }
+    }
+
+    if (needsSync) {
+      console.log(`[SmartPage] Syncing page ${pageId} due to: ${reason}`);
+      const content = await oneNoteService.fetchPageContent(pageId);
+
+      // Save to DB
+      localDB.savePageContent(pageId, content);
+      localStore.savePageContent(pageId, content); // Legacy store backup
+
+      // We might also need to update the lastModifiedDateTime in the DB to avoid re-syncing loop
+      // But fetchPageContent doesn't return metadata. We should probably update it with the meta we fetched or just assume current time.
+      // Ideally we save the whole page object if we have meta.
+      // For now, content update timestamps it in localDB.
+
+      return { success: true, content };
+    }
+
+    return { success: true, content: localPage.content };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -982,8 +1038,124 @@ ipcMain.handle('onenote-sync-section', async (event, { sectionId }) => {
         event.sender.send('onenote-sync-progress', status);
       }
     };
-    const pages = await oneNoteService.fetchSectionContent(sectionId, progressCallback);
-    return { success: true, pages };
+
+    // 1. Fetch Remote List (Metadata only)
+    if (progressCallback) progressCallback({ status: 'checking_updates', message: '🔎 Checking for updates...' });
+    const remotePages = await oneNoteService.fetchPages(sectionId);
+
+    // 2. Fetch Local List
+    const localPages = localDB.getPages(sectionId);
+    const localMap = new Map(localPages.map(p => [p.id, p]));
+
+    // 3. Identify pages needing update
+    const pagesToSync = [];
+    const upToDatePages = [];
+
+    for (const remotePage of remotePages) {
+      const localPage = localMap.get(remotePage.id);
+
+      let needsSync = false;
+      let reason = '';
+
+      if (!localPage) {
+        needsSync = true;
+        reason = 'new';
+      } else if (localPage.lastModifiedDateTime !== remotePage.lastModifiedDateTime) {
+        needsSync = true;
+        reason = 'updated';
+      } else {
+        // Content validation
+        // Optimization: localPage from getPages is metadata-only. Fetch full if needed.
+        const fullLocalPage = localDB.getPage(localPage.id);
+        const content = fullLocalPage ? (fullLocalPage.content || '') : '';
+
+        const isContentEmpty = !content || content.trim().length === 0;
+        const isErrorParams = content.startsWith('Failed to load content');
+
+        // Stricter check: OneNote API always returns HTML. If no body/div/p, it's likely bad.
+        // Also check if it's the specific "undefined" string literal
+        const hasHtmlStructure = content.includes('<html') || content.includes('<body') || content.includes('<div') || content.includes('<p');
+        const isTooShort = content.length < 200; // Lowered to 200 to be safe, but relied on structure check
+        const isLiteralUndefined = content === 'undefined' || content === 'null';
+
+        if (isContentEmpty || isErrorParams || isLiteralUndefined || (!hasHtmlStructure && isTooShort)) {
+          // Fix "bad" pages or empty pages
+          needsSync = true;
+          reason = isContentEmpty ? 'empty_content' : (isErrorParams ? 'error_state' : 'invalid_structure');
+        } else {
+          // Deep check: Is it just an empty OneNote table?
+          // OneNote often returns a table with empty cells for layout.
+          // Check if there is any actual text content outside of tags.
+          // Strip tags and whitespace
+          const textOnly = content.replace(/<[^>]*>/g, '').replace(/\s+/g, '').trim();
+          if (textOnly.length < 10) {
+            needsSync = true;
+            reason = 'empty_layout_detected';
+          }
+        }
+      }
+
+      if (needsSync) {
+        pagesToSync.push({ ...remotePage, reason });
+      } else {
+        // Keep local content for up-to-date pages
+        upToDatePages.push(localPage);
+      }
+    }
+
+    // 4. Fetch content for needed pages
+    if (pagesToSync.length > 0) {
+      if (progressCallback) progressCallback({
+        status: 'syncing_pages',
+        message: `⬇️ Found ${pagesToSync.length} pages to sync...`
+      });
+
+      console.log(`[SmartSync] Syncing ${pagesToSync.length} pages in section ${sectionId}. Reasons: ${pagesToSync.map(p => p.reason).join(', ')}`);
+
+      for (let i = 0; i < pagesToSync.length; i++) {
+        const page = pagesToSync[i];
+        try {
+          if (progressCallback) progressCallback({
+            status: 'fetching_page',
+            message: `📝 Fetching (${i + 1}/${pagesToSync.length}): ${page.title || 'Untitled'} (${page.reason})`
+          });
+
+          // Fetch content
+          const content = await oneNoteService.fetchPageContent(page.id);
+          const fullPage = { ...page, content };
+
+          // Save immediately to DB
+          localDB.savePages([fullPage], sectionId);
+          localDB.savePageContent(page.id, content);
+
+          // Add to result list
+          upToDatePages.push(fullPage);
+
+          // Rate limit protection
+          if (i < pagesToSync.length - 1) await new Promise(r => setTimeout(r, 500));
+
+        } catch (err) {
+          console.error(`Failed to sync page ${page.id}:`, err);
+          // Keep existing if available, or error state
+          const existing = localMap.get(page.id);
+          if (existing) {
+            upToDatePages.push(existing);
+          } else {
+            upToDatePages.push({ ...page, content: `Failed to load content: ${err.message}` });
+          }
+        }
+      }
+    } else {
+      if (progressCallback) progressCallback({ status: 'up_to_date', message: '✅ Section is up to date' });
+    }
+
+    // 5. Sort final list by title (or whatever logic matches UI) - Remote list order is usually best or alpha
+    // We'll trust the remotePages order which comes from API (alpha sorted in service)
+    const finalMap = new Map(upToDatePages.map(p => [p.id, p]));
+    const orderedPages = remotePages.map(rp => finalMap.get(rp.id)).filter(p => p);
+
+    return { success: true, pages: orderedPages };
+
   } catch (error) {
     if (!event.sender.isDestroyed()) {
       event.sender.send('log-error', `Sync Section Failed: ${error.message}`);
@@ -1550,10 +1722,9 @@ ipcMain.handle('scan-page-images', async (event, { pageId }) => {
 
     const hierarchyPath = localDB.getPageHierarchyPath(pageId);
 
-    // Sanitize path parts
+    // Sanitize path parts - MUST MATCH automation-runner.js logic EXACTLY
     const sanitizedPath = hierarchyPath.map(part =>
-      // Use the same helper function defined earlier in main.js
-      part.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, '_').substring(0, 50)
+      part.replace(/[^a-z0-9 ]/gi, '_').substring(0, 50)
     );
 
     const pageDir = path.join(saveRoot, ...sanitizedPath);

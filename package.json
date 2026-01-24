@@ -2,6 +2,7 @@
     "name": "gemini-image-downloader",
     "version": "1.0.0",
     "description": "Electron app that downloads images from public Google Gemini chat links.",
+    "author": "Gemini Downloader",
     "main": "electron-main.js",
     "scripts": {
         "dev": "concurrently \"npm run osm:vite\" \"npm run osm:electron\"",

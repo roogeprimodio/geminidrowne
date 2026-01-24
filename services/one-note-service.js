@@ -312,6 +312,18 @@ Please wait several minutes and try again.`;
         }, `fetchPageContent(${pageId})`);
     }
 
+    async getPageMetadata(pageId) {
+        const token = await this.getAccessToken();
+        if (!token) throw new Error("No access token available.");
+
+        return await this.makeRequestWithRetry(async () => {
+            const response = await axios.get(`https://graph.microsoft.com/v1.0/me/onenote/pages/${pageId}?$select=id,title,lastModifiedDateTime`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            return response.data;
+        }, `getPageMetadata(${pageId})`);
+    }
+
     // NEW: Batch request method for fetching multiple resources in one request
     async makeBatchRequest(requests, context = '') {
         const token = await this.getAccessToken();

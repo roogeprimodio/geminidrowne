@@ -234,14 +234,20 @@ function App() {
 
                     // Then trigger the sync to get content
                     const syncResult = await electron.oneNoteSyncSection(item.id);
-                    if (syncResult.success && syncResult.pages) {
+                    if (syncResult && syncResult.success && Array.isArray(syncResult.pages)) {
                         // Merge content into existing pages
                         setPages(prev => {
-                            const contentMap = new Map(syncResult.pages.map(p => [p.id, p]));
-                            return prev.map(p => {
-                                const synced = contentMap.get(p.id);
-                                return synced ? { ...p, ...synced } : p;
-                            });
+                            if (!Array.isArray(prev)) return syncResult.pages;
+                            try {
+                                const contentMap = new Map(syncResult.pages.map(p => [p.id, p]));
+                                return prev.map(p => {
+                                    const synced = contentMap.get(p.id);
+                                    return synced ? { ...p, ...synced } : p;
+                                });
+                            } catch (e) {
+                                console.error("Error merging pages:", e);
+                                return prev;
+                            }
                         });
                     }
                 } else {
@@ -257,21 +263,26 @@ function App() {
 
     const handlePageSelect = async (page) => {
         setSelectedPageId(page.id);
-        // Content should ideally be loaded by the sync above, but if not (or failed), fallback to on-demand
-        if (!page.content) {
-            try {
-                setIsPageLoading(true);
-                const result = await electron.oneNoteGetPageContent(page.id);
-                if (result.success) {
-                    setPages(prev => prev.map(p =>
-                        p.id === page.id ? { ...p, content: result.content } : p
-                    ));
-                }
-            } catch (err) {
-                console.error("Failed to fetch content", err);
-            } finally {
-                setIsPageLoading(false);
+
+        // Smart Sync: Always check integrity/updates when opening a page.
+        // If local is good, it returns instantly. If bad/outdated, it fetches.
+        // We set isPageLoading only if we don't have content to show immediately,
+        // OR we can show loading indicator for the "checking" phase if preferred,
+        // but for better UX, let's show existing content and update if needed.
+
+        if (!page.content) setIsPageLoading(true);
+
+        try {
+            const result = await electron.oneNoteGetPageContent(page.id);
+            if (result.success) {
+                setPages(prev => prev.map(p =>
+                    p.id === page.id ? { ...p, content: result.content } : p
+                ));
             }
+        } catch (err) {
+            console.error("Failed to fetch content", err);
+        } finally {
+            setIsPageLoading(false);
         }
     };
 

@@ -441,6 +441,38 @@ class LocalDatabase {
         `).run(content, pageId);
     }
 
+    // Get pages for a section (metadata only for list/sync comparison)
+    getPages(sectionId) {
+        const pages = this.db.prepare(`
+            SELECT id, title, lastModifiedDateTime, isDeleted, sectionId FROM pages 
+            WHERE sectionId = ?
+            ORDER BY title ASC
+        `).all(sectionId);
+
+        return pages.map(p => ({
+            id: p.id,
+            title: p.title,
+            lastModifiedDateTime: p.lastModifiedDateTime,
+            sectionId: p.sectionId,
+            isDeleted: p.isDeleted === 1,
+            content: null // Explicitly null to indicate need to fetch if validating
+        }));
+    }
+
+    // Get single page with content
+    getPage(pageId) {
+        const p = this.db.prepare(`
+            SELECT * FROM pages WHERE id = ?
+        `).get(pageId);
+
+        if (!p) return null;
+
+        const page = JSON.parse(p.data);
+        page.isDeleted = p.isDeleted === 1;
+        page.content = p.content;
+        return page;
+    }
+
     // --- Prompts Management ---
 
     getPrompts(pageId) {
