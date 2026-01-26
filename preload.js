@@ -2,9 +2,21 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   startDownload: payload => ipcRenderer.invoke('start-download', payload),
-  onLogMessage: callback => ipcRenderer.on('log-message', (_, message) => callback(message)),
-  onLogError: callback => ipcRenderer.on('log-error', (_, message) => callback(message)),
-  onDownloadComplete: callback => ipcRenderer.on('download-complete', callback),
+  onLogMessage: callback => {
+    const subscription = (_, message) => callback(message);
+    ipcRenderer.on('log-message', subscription);
+    return () => ipcRenderer.removeListener('log-message', subscription);
+  },
+  onLogError: callback => {
+    const subscription = (_, message) => callback(message);
+    ipcRenderer.on('log-error', subscription);
+    return () => ipcRenderer.removeListener('log-error', subscription);
+  },
+  onDownloadComplete: callback => {
+    const subscription = (_, payload) => callback(payload);
+    ipcRenderer.on('download-complete', subscription);
+    return () => ipcRenderer.removeListener('download-complete', subscription);
+  },
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   getAutomationState: () => ipcRenderer.invoke('automation-state:get'),
   updateAutomationState: state => ipcRenderer.invoke('automation-state:update', state),

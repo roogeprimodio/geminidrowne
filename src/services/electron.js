@@ -24,13 +24,7 @@ export const electron = {
     // Platform
     selectFolder: () => isElectron ? window.electronAPI.selectFolder() : Promise.resolve(null),
     openFolder: (path) => isElectron ? window.electronAPI.openFolder(path) : Promise.resolve({ success: false }),
-    onLogMessage: (callback) => {
-        if (isElectron) {
-            window.electronAPI.onLogMessage(callback);
-            // Return cleanup function if needed in future
-            return () => { };
-        }
-    },
+    onLogMessage: (callback) => isElectron && window.electronAPI.onLogMessage(callback),
     onLogError: (callback) => isElectron && window.electronAPI.onLogError(callback),
     onAutomationLog: (callback) => isElectron && window.electronAPI.onAutomationLog(callback), // Add this
     onAutomationAssetCreated: (callback) => isElectron && window.electronAPI.onAutomationAssetCreated(callback),

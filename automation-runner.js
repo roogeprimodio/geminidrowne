@@ -2,6 +2,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs-extra');
 const { app } = require('electron');
+const sharp = require('sharp');
 
 // Configuration
 const CHATGPT_URL = 'https://chatgpt.com/';
@@ -142,8 +143,44 @@ async function runChatGPTFlow(log, basePrompt, script, pageId, localDB) {
 async function sendToChatGPT(page, text) {
   if (isStopped) throw new Error('Stopped by user');
   const selector = '#prompt-textarea';
+
+  // Wait for the textarea to be ready
   await page.waitForSelector(selector);
-  await page.fill(selector, text);
+
+  // Method 1: Clipboard Paste (Most Reliable for large text)
+  try {
+    await page.focus(selector);
+    await page.evaluate((textToCopy) => {
+      navigator.clipboard.writeText(textToCopy);
+    }, text);
+    await page.keyboard.down('Control');
+    await page.keyboard.press('V');
+    await page.keyboard.up('Control');
+  } catch (clipboardErr) {
+    console.warn('Clipboard paste failed, falling back to fill:', clipboardErr);
+    // Method 2: Fallback to fill
+    await page.fill(selector, text);
+  }
+
+  // Small delay to let UI process the input
+  await page.waitForTimeout(1000);
+
+  // Check if send button is enabled, if not, maybe text didn't input?
+  const sendButton = await page.$('[data-testid="send-button"]');
+  if (sendButton) {
+    const disabled = await sendButton.evaluate(el => el.disabled);
+    if (disabled) {
+      // Force text via value property if still empty
+      await page.evaluate((sel, txt) => {
+        const el = document.querySelector(sel);
+        if (el && el.value === '') el.value = txt;
+        // Trigger input event
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }, selector, text);
+      await page.waitForTimeout(500);
+    }
+  }
+
   await page.keyboard.press('Enter');
 }
 
@@ -327,9 +364,10 @@ async function saveAllBatchedImages(page, prompts, saveDir, log, pageId, options
       .replace(/[^a-z0-9 \-\.]/gi, '') // Allow alphanumeric, spaces, dashes, dots
       .replace(/\s+/g, ' ')
       .trim()
+      .trim()
       .substring(0, 100);
 
-    const filename = `${safeFilename}.png`;
+    const filename = `${safeFilename}.jpg`;
     const filePath = path.join(saveDir, filename);
 
     log(`🔍 Finding image for: "${safeFilename.substring(0, 20)}..."`);
@@ -400,8 +438,20 @@ async function saveAllBatchedImages(page, prompts, saveDir, log, pageId, options
 
         if (response.ok()) {
           const buffer = await response.body();
+
+          // Convert to JPEG
+          let jpgBuffer;
+          try {
+            jpgBuffer = await sharp(buffer)
+              .jpeg({ quality: 95, mozjpeg: true })
+              .toBuffer();
+          } catch (e) {
+            console.warn('Sharp conversion failed in batch mode, saving raw buffer as fallback', e);
+            jpgBuffer = buffer;
+          }
+
           // Overwrite is default behavior (matches user request)
-          await fs.writeFile(filePath, buffer);
+          await fs.writeFile(filePath, jpgBuffer);
           log(`✅ Saved: ${filename}`);
 
           const win = require('electron').BrowserWindow.getAllWindows()[0];

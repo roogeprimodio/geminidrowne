@@ -3,6 +3,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const readline = require('readline/promises');
 const { stdin: input, stdout: output } = require('node:process');
+const sharp = require('sharp');
 
 const DEFAULT_OUTPUT_DIR = path.join(process.cwd(), 'gemini_images');
 
@@ -94,12 +95,46 @@ async function extractPromptsAndImages(page, log) {
 
     debug_logs.push(`[Debug] Found ${promptElements.length} prompt candidates.`);
 
+    function getHighResUrl(src) {
+      try {
+        const url = new URL(src);
+        if (url.hostname.includes('googleusercontent.com')) {
+          // Replace existing size params (e.g. =w100-h100, =s200) with =s0 (original)
+          // Google URLs often look like: .../ACTUAL_ID=w400-h400
+          // We want: .../ACTUAL_ID=s0
+          const pathname = url.pathname;
+          // Check if path ends with params
+          if (pathname.match(/=[a-z0-9-]+$/)) {
+            url.pathname = pathname.replace(/=[a-z0-9-]+$/, '=s0');
+          } else {
+            // Sometimes it's appended? try appending if no params found or just return original
+            // Safer to just try to swap if we see a size param, otherwise leave it.
+            // Many times the large image is just the source.
+          }
+          return url.toString();
+        }
+      } catch (e) { }
+      return src;
+    }
+
     const imageElements = Array.from(document.querySelectorAll('img[src]'))
       .filter(img => img.src && !img.src.startsWith('data:'))
       .map(img => {
         const rect = img.getBoundingClientRect();
+        // Try to find a parent anchor valid download link
+        const parentLink = img.closest('a');
+        let src = img.src.trim();
+
+        // Strategy 1: Link href
+        if (parentLink && parentLink.href && parentLink.href.includes('googleusercontent.com')) {
+          src = parentLink.href;
+        }
+
+        // Strategy 2: URL Upgrade (Resolution)
+        src = getHighResUrl(src);
+
         return {
-          src: img.src.trim(),
+          src: src,
           top: rect.top,
           height: rect.height
         };
@@ -168,19 +203,79 @@ async function downloadImage(imageData, log, baseDir = DEFAULT_OUTPUT_DIR) {
 
     await fs.ensureDir(folderPath);
 
-    const extension = path.extname(new URL(url).pathname).toLowerCase() || '.jpg';
+    // Extension will be handled after conversion
+    // const extension = path.extname(new URL(url).pathname).toLowerCase() || '.jpg';
     // Use the folder name for the image file, adding an index if it's not the first image.
-    const filenameBase = path.basename(folderName).substring(0, 150);
-    const filename = imageNumber > 1 ? `${filenameBase}_${imageNumber}${extension}` : `${filenameBase}${extension}`;
-    const filePath = path.join(folderPath, filename);
+    // const filenameBase = path.basename(folderName).substring(0, 150);
+    // const filename = imageNumber > 1 ? `${filenameBase}_${imageNumber}${extension}` : `${filenameBase}${extension}`;
+    // const filePath = path.join(folderPath, filename);
 
-    const response = await fetch(url);
+    const originalUrl = url;
+    let fetchUrl = url;
+    let response;
+
+    // Retry loop: Try High-Res first, then fallback to original if needed
+    try {
+      response = await fetch(fetchUrl);
+      if (!response.ok) throw new Error(`Status ${response.status}`);
+
+      // Check content type
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.startsWith('image/')) {
+        throw new Error(`Invalid content-type: ${contentType}`);
+      }
+    } catch (e) {
+      // If high-res failed, try original if it was different
+      // Re-construct the original URL from the one we might have modified in the DOM extraction phase?
+      // Actually, we modified it in 'extractPromptsAndImages'.
+      // If the URL looks "upgraded" (contains =s0), try stripping the param to get a default/thumbnail version which is better than nothing.
+      if (fetchUrl.includes('=s0')) {
+        // Try valid "preview" size if original fails
+        const fallbackUrl = fetchUrl.replace('=s0', '=w800'); // reasonable fallback
+        response = await fetch(fallbackUrl);
+      } else {
+        throw e;
+      }
+    }
+
     if (!response.ok) {
       throw new Error(`Failed to download ${url}: ${response.statusText}`);
     }
 
     const buffer = await response.arrayBuffer();
-    await fs.writeFile(filePath, Buffer.from(buffer));
+    if (!buffer || buffer.byteLength === 0) {
+      throw new Error('Empty response buffer');
+    }
+
+    // Validate buffer starts with proper header?
+    // We will use sharp to ensure it is a valid JPEG, as requested by user.
+    // "actual jpg imgs as jpg"
+
+    let jpgBuffer;
+    try {
+      jpgBuffer = await sharp(Buffer.from(buffer))
+        .jpeg({ quality: 95, mozjpeg: true }) // High quality JPEG
+        .toBuffer();
+    } catch (sharpError) {
+      console.warn(`Sharp conversion failed: ${sharpError.message}. Content-Type was: ${response.headers.get('content-type')}`);
+      // Fallback: If sharp fails, but we have a buffer and content-type says image/jpeg, save raw.
+      // If content-type is image/png, we might be saving png as jpg, which is the original issue, 
+      // but if sharp failed we are in trouble anyway. 
+      // Let's try to save raw if it looks like a JPEG (SOI marker FF D8).
+      if (buffer.byteLength > 2 && buffer[0] === 0xFF && buffer[1] === 0xD8) {
+        jpgBuffer = Buffer.from(buffer);
+      } else {
+        throw new Error(`Could not convert to JPEG and source is not JPEG. ${sharpError.message}`);
+      }
+    }
+
+    // Force .jpg extension
+    const extension = '.jpg';
+    const filenameBase = path.basename(folderName).substring(0, 150);
+    const filename = imageNumber > 1 ? `${filenameBase}_${imageNumber}${extension}` : `${filenameBase}${extension}`;
+    const filePath = path.join(folderPath, filename);
+
+    await fs.writeFile(filePath, jpgBuffer);
 
     // Save the prompt as a text file if it doesn't exist
     const promptFilePath = path.join(folderPath, 'prompt.txt');
