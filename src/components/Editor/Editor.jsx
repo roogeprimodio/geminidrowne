@@ -139,27 +139,28 @@ const Editor = ({ page, isLoading, onRunAutomation }) => {
                         <button onClick={handleZoomIn} className="p-1.5 text-text-muted hover:text-text-main">+</button>
                     </div>
 
-                    <button
-                        className="flex items-center gap-2 px-3 py-1.5 bg-green-600/10 text-green-500 hover:bg-green-600/20 border border-green-600/20 rounded text-sm transition-colors"
-                        onClick={handleRunChatGPT}
-                        title="Run ChatGPT Automation"
-                    >
-                        <Play size={14} />
-                        <span className="hidden xl:inline">ChatGPT</span>
-                    </button>
-
-                    {/* Dynamic Gemini Controls */}
+                    {/* Dynamic Automation Controls */}
                     {automationStatus === 'idle' ? (
-                        <div ref={setRunButtonRef}>
+                        <>
                             <button
-                                className="flex items-center gap-2 px-3 py-1.5 bg-blue-600/10 text-blue-500 hover:bg-blue-600/20 border border-blue-600/20 rounded text-sm transition-colors"
-                                onClick={() => setIsRunConfigOpen(true)}
-                                title="Run Gemini Automation"
+                                className="flex items-center gap-2 px-3 py-1.5 bg-green-600/10 text-green-500 hover:bg-green-600/20 border border-green-600/20 rounded text-sm transition-colors"
+                                onClick={handleRunChatGPT}
+                                title="Run ChatGPT Automation"
                             >
                                 <Play size={14} />
-                                <span className="hidden xl:inline">Gemini</span>
+                                <span className="hidden xl:inline">ChatGPT</span>
                             </button>
-                        </div>
+                            <div ref={setRunButtonRef}>
+                                <button
+                                    className="flex items-center gap-2 px-3 py-1.5 bg-blue-600/10 text-blue-500 hover:bg-blue-600/20 border border-blue-600/20 rounded text-sm transition-colors"
+                                    onClick={() => setIsRunConfigOpen(true)}
+                                    title="Run Gemini Automation"
+                                >
+                                    <Play size={14} />
+                                    <span className="hidden xl:inline">Gemini</span>
+                                </button>
+                            </div>
+                        </>
                     ) : (
                         <div className="flex items-center gap-1 bg-surface-light border border-border rounded-lg p-1 animate-in fade-in slide-in-from-right-4 duration-300">
                             {automationStatus === 'running' ? (

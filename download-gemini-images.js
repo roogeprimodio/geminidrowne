@@ -1,4 +1,4 @@
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-core');
 const fs = require('fs-extra');
 const path = require('path');
 const readline = require('readline/promises');
@@ -310,15 +310,48 @@ async function launchBrowser(log) {
     ]
   };
 
-  const channelsToTry = [null, 'chrome', 'msedge'];
+  // Ensure app is required at the top level or fetched dynamically if within Electron
+  const { app } = require('electron').app ? require('electron') : { app: { isPackaged: false } };
+
+  // Determine bundled executable path if packaged
+  let bundledExecutablePath = null;
+  if (app.isPackaged) {
+    const browsersDir = path.join(process.resourcesPath, 'playwright-browsers');
+    try {
+      if (fs.existsSync(browsersDir)) {
+        const entries = fs.readdirSync(browsersDir);
+        const chromiumDir = entries.find(e => e.startsWith('chromium-'));
+        if (chromiumDir) {
+          bundledExecutablePath = path.join(
+            browsersDir,
+            chromiumDir,
+            'chrome-win',
+            'chrome.exe'
+          );
+        }
+      }
+    } catch (e) {
+      log(`⚠️ Failed to resolve bundled executable: ${e.message}`);
+    }
+  }
+
+  if (bundledExecutablePath && fs.existsSync(bundledExecutablePath)) {
+    try {
+      log(`📦 Launching bundled Chromium from: ${bundledExecutablePath}`);
+      return await chromium.launch({
+        ...baseOptions,
+        executablePath: bundledExecutablePath
+      });
+    } catch (error) {
+      log(`❌ Failed to launch bundled browser: ${error.message}`);
+    }
+  }
+
+  const channelsToTry = ['chrome', 'msedge'];
 
   for (const channel of channelsToTry) {
     try {
-      if (channel) {
-        log(`🧭 Falling back to system ${channel === 'chrome' ? 'Chrome' : 'Edge'}...`);
-      } else {
-        log('🧭 Launching bundled Chromium runtime...');
-      }
+      log(`🧭 Launching system ${channel === 'chrome' ? 'Chrome' : 'Edge'}...`);
 
       const launchOptions = { ...baseOptions };
       if (channel) launchOptions.channel = channel;

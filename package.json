@@ -1,6 +1,6 @@
 {
     "name": "gemini-image-downloader",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Electron app that downloads images from public Google Gemini chat links.",
     "author": "Gemini Downloader",
     "main": "electron-main.js",
@@ -24,7 +24,7 @@
         "fs-extra": "^11.2.0",
         "lucide-react": "^0.344.0",
         "p-limit": "^7.2.0",
-        "playwright": "^1.42.1",
+        "playwright-core": "^1.58.2",
         "react": "^18.2.0",
         "react-dom": "^18.2.0",
         "sharp": "^0.34.5"
@@ -44,5 +44,39 @@
         "typescript": "^5.4.2",
         "vite": "^5.1.5",
         "wait-on": "^7.2.0"
+    },
+    "build": {
+        "appId": "com.gemini.imagedownloader",
+        "productName": "Gemini Image Downloader",
+        "npmRebuild": true,
+        "directories": {
+            "output": "electron-dist"
+        },
+        "files": [
+            "dist/**/*",
+            "electron-main.js",
+            "preload.js",
+            "automation-runner.js",
+            "automation-store.js",
+            "download-gemini-images.js",
+            "electron/**/*",
+            "services/**/*",
+            "package.json"
+        ],
+        "extraResources": [
+            {
+                "from": "node_modules/playwright-core/.local-browsers",
+                "to": "playwright-browsers",
+                "filter": [
+                    "**/*"
+                ]
+            }
+        ],
+        "win": {
+            "target": "nsis"
+        },
+        "mac": {
+            "target": "dmg"
+        }
     }
 }

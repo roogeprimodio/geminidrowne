@@ -20,6 +20,9 @@ export const electron = {
     oneNoteSyncAll: () => isElectron ? window.electronAPI.oneNoteSyncAll() : Promise.resolve({ success: true, data: [] }),
     oneNoteCheckAuth: (creds) => isElectron ? window.electronAPI.oneNoteCheckAuth(creds) : Promise.resolve({ success: true }),
     oneNoteLogin: (creds) => isElectron ? window.electronAPI.oneNoteLogin(creds) : Promise.resolve({ success: true, account: { username: 'Mock User' } }),
+    oneNoteGetSectionGroupPages: (payload) => isElectron ? window.electronAPI.oneNoteGetSectionGroupPages(payload) : Promise.resolve({ success: true, pages: [], promptCounts: {}, contentStatuses: {} }),
+
+    // Automation events
 
     // Platform
     selectFolder: () => isElectron ? window.electronAPI.selectFolder() : Promise.resolve(null),
@@ -29,6 +32,13 @@ export const electron = {
     onAutomationLog: (callback) => isElectron && window.electronAPI.onAutomationLog(callback), // Add this
     onAutomationAssetCreated: (callback) => isElectron && window.electronAPI.onAutomationAssetCreated(callback),
     setAutomationControl: (payload) => isElectron ? window.electronAPI.setAutomationControl(payload) : Promise.resolve({ success: true }),
+    onAutomationBatchProgress: (callback) => isElectron && window.electronAPI.onAutomationBatchProgress(callback),
+    backgroundCachePages: (payload) => isElectron ? window.electronAPI.backgroundCachePages(payload) : Promise.resolve({ success: true, cached: 0 }),
+    backgroundCacheAllSections: () => isElectron ? window.electronAPI.backgroundCacheAllSections() : Promise.resolve({ success: true, queued: 0 }),
+    onBgCacheProgress: (callback) => isElectron && window.electronAPI.onBgCacheProgress(callback),
+    onBgCacheTotal: (callback) => isElectron && window.electronAPI.onBgCacheTotal(callback),
+
+    // Prompts
 
     // Settings
     settingsGet: (key) => isElectron ? window.electronAPI.settingsGet(key) : Promise.resolve({ success: true, value: '' }),

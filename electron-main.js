@@ -18,6 +18,24 @@ let mainWindow;
 let isDownloading = false;
 let automationState = getDefaultState();
 let automationBusy = false;
+
+// Global background sync queue — ensures only one section syncs at a time to avoid rate limits
+let bgSyncQueue = [];
+let bgSyncRunning = false;
+
+async function runNextBgSync() {
+  if (bgSyncRunning || bgSyncQueue.length === 0) return;
+  bgSyncRunning = true;
+  const task = bgSyncQueue.shift();
+  try {
+    await task.run();
+  } catch (e) {
+    console.error('[BgSyncQueue] Task error:', e.message);
+  }
+  task.resolve();
+  bgSyncRunning = false;
+  runNextBgSync();
+}
 const automationControl = {
   chatgpt: { paused: false, aborted: false },
   gemini: { paused: false, aborted: false }
@@ -41,6 +59,7 @@ function createWindow() {
     minHeight: 560,
     backgroundColor: '#080c1a',
     title: 'Gemini Image Downloader',
+    icon: path.join(__dirname, 'build', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -68,16 +87,32 @@ function createWindow() {
     fs.access(indexPath)
       .then(() => {
         console.log("✅ File exists");
-        mainWindow.loadFile(indexPath).catch(e => console.error("❌ Load file error:", e));
+        mainWindow.loadFile(indexPath).catch(e => console.error("❌ Load file err or:", e));
       })
       .catch(() => console.error("❌ File NOT found at:", indexPath));
 
     // Open DevTools in production temporarily to see errors
-    // mainWindow.webContents.openDevTools();
+    mainWindow.webContents.openDevTools();
   }
 
   mainWindow.webContents.on('did-finish-load', () => {
     broadcastAutomationState();
+  });
+
+  // Intercept links to stop 'about:blank' or moving out of app
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http') || url.startsWith('https')) {
+      require('electron').shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const isLocalUrl = url.startsWith('http://localhost') || url.startsWith('file://');
+    if (!isLocalUrl && (url.startsWith('http') || url.startsWith('https'))) {
+      event.preventDefault();
+      require('electron').shell.openExternal(url);
+    }
   });
 }
 
@@ -638,50 +673,7 @@ function parseGeminiPromptsFile(fileContent) {
   return prompts;
 }
 
-ipcMain.handle('repair-browsers', async (event) => {
-  const webContents = event.sender;
-  const log = (msg) => webContents.send('automation-log', { message: msg, timestamp: Date.now() });
-
-  log('🔧 Starting automatic browser repair...');
-  log('ℹ️ This will download the required Chromium instance (~150MB).');
-  log('⏳ Please wait, this process may take 1-2 minutes depending on your internet speed.');
-
-  return new Promise((resolve) => {
-    // Attempt to install chromium via npx
-    // This is most robust as it handles both dev and packaged states if npm/npx is available
-    // For a fully standalone app, we'd bundle the browser, but this is a great middle ground for distribution to friends.
-    const cmd = 'npx playwright install chromium';
-
-    const installProcess = exec(cmd);
-
-    installProcess.stdout.on('data', (data) => {
-      const output = data.toString().trim();
-      if (output) log(`[Download] ${output}`);
-    });
-
-    installProcess.stderr.on('data', (data) => {
-      const output = data.toString().trim();
-      // stderr often contains progress bars or info logs for playwright
-      if (output && !output.includes('node_modules')) log(`[Info] ${output}`);
-    });
-
-    installProcess.on('close', (code) => {
-      if (code === 0) {
-        log('✅ Success! Browsers are now installed and ready.');
-        resolve({ success: true });
-      } else {
-        log(`❌ Installation failed with exit code ${code}.`);
-        log('💡 Alternative fix: Open a terminal and run "npx playwright install chromium" manually.');
-        resolve({ success: false, error: `Exit code ${code}` });
-      }
-    });
-
-    installProcess.on('error', (err) => {
-      log(`❌ Critical error starting repair: ${err.message}`);
-      resolve({ success: false, error: err.message });
-    });
-  });
-});
+// --- repair-browsers removed (no longer needed for playwright-core) ---
 
 // --- OneNote Integration ---
 const http = require('http');
@@ -815,16 +807,25 @@ ipcMain.handle('onenote-get-children', async (event, { parentId, parentType }) =
 
 ipcMain.handle('onenote-get-pages', async (event, { sectionId } = {}) => {
   try {
-    const pages = sectionId
-      ? await oneNoteService.fetchPages(sectionId)
-      : await oneNoteService.fetchRecentPages();
-
-    // Save to local DB if we have a sectionId
-    if (sectionId && pages.length) {
-      localDB.savePages(pages, sectionId);
+    if (!sectionId) {
+      const pages = await oneNoteService.fetchRecentPages();
+      return { success: true, pages };
     }
 
-    return { success: true, pages };
+    // Return local pages immediately if we have any cached
+    const localPages = localDB.getPages(sectionId);
+    if (localPages.length > 0) {
+      // Refresh metadata from remote in background (don't block)
+      oneNoteService.fetchPages(sectionId).then(remotePages => {
+        if (remotePages.length) localDB.savePages(remotePages, sectionId);
+      }).catch(() => { });
+      return { success: true, pages: localPages };
+    }
+
+    // No local data — fetch from remote (first open of this section)
+    const remotePages = await oneNoteService.fetchPages(sectionId);
+    if (remotePages.length) localDB.savePages(remotePages, sectionId);
+    return { success: true, pages: remotePages };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -832,76 +833,133 @@ ipcMain.handle('onenote-get-pages', async (event, { sectionId } = {}) => {
 
 ipcMain.handle('onenote-get-page-content', async (event, { pageId }) => {
   try {
-    // 1. Get Local Content
-    let localPage = localDB.getPages ? localDB.getPage(pageId) : null;
-    // Fallback if getPage doesn't separate exist (we added getPages, not getPage, checking store...)
+    // 1. Get Local Content first — ALWAYS return immediately if valid
+    let localPage = localDB.getPage ? localDB.getPage(pageId) : null;
     if (!localPage) {
       const content = localStore.getPageContent(pageId);
       if (content) localPage = { id: pageId, content, lastModifiedDateTime: null };
     }
 
     // 2. Validate Local Content
-    let needsSync = false;
-    let reason = '';
-
-    if (!localPage || !localPage.content) {
-      needsSync = true;
-      reason = 'missing_local';
-    } else {
-      const content = localPage.content;
-      const isContentEmpty = !content || content.trim().length === 0;
-      const isErrorParams = content.startsWith('Failed to load content');
-      const hasHtmlStructure = content.includes('<html') || content.includes('<body') || content.includes('<div') || content.includes('<p');
-      const isTooShort = content.length < 200;
-      const isLiteralUndefined = content === 'undefined' || content === 'null';
-
-      // Grid Check
+    const isContentValid = (content) => {
+      if (!content || content.trim().length === 0) return false;
+      if (content.startsWith('Failed to load content')) return false;
+      if (content === 'undefined' || content === 'null') return false;
+      const hasHtml = content.includes('<html') || content.includes('<body') || content.includes('<div') || content.includes('<p');
+      if (!hasHtml && content.length < 200) return false;
       const textOnly = content.replace(/<[^>]*>/g, '').replace(/\s+/g, '').trim();
-      const isEmptyLayout = textOnly.length < 10;
+      if (textOnly.length < 10) return false;
+      return true;
+    };
 
-      if (isContentEmpty || isErrorParams || isLiteralUndefined || (!hasHtmlStructure && isTooShort) || isEmptyLayout) {
-        needsSync = true;
-        reason = 'invalid_content';
-      }
-    }
-
-    // 3. Check for Updates (Metadata) - Only if content looks valid locally to catch updates
-    if (!needsSync) {
-      try {
-        const remoteMeta = await oneNoteService.getPageMetadata(pageId);
-        // If local date is missing or older than remote
-        if (!localPage.lastModifiedDateTime || (remoteMeta.lastModifiedDateTime > localPage.lastModifiedDateTime)) {
-          needsSync = true;
-          reason = 'outdated';
-          console.log(`[SmartPage] Page ${pageId} is outdated. Local: ${localPage.lastModifiedDateTime}, Remote: ${remoteMeta.lastModifiedDateTime}`);
+    if (localPage && isContentValid(localPage.content)) {
+      // ✅ FAST PATH: Return cached content immediately
+      // Kick off background metadata check only — do NOT block the UI
+      setImmediate(async () => {
+        try {
+          const remoteMeta = await oneNoteService.getPageMetadata(pageId);
+          if (!localPage.lastModifiedDateTime || remoteMeta.lastModifiedDateTime > localPage.lastModifiedDateTime) {
+            console.log(`[SmartPage] BG: Page ${pageId} is outdated, fetching in background...`);
+            const freshContent = await oneNoteService.fetchPageContent(pageId);
+            localDB.savePageContent(pageId, freshContent);
+            localStore.savePageContent(pageId, freshContent);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('onenote-page-updated', { pageId, content: freshContent, isBackgroundUpdate: true });
+            }
+          }
+        } catch (bgErr) {
+          console.warn(`[SmartPage] BG metadata check failed for ${pageId}:`, bgErr.message);
         }
-      } catch (err) {
-        console.warn(`[SmartPage] Failed to check metadata for ${pageId}, using local if available.`, err);
-      }
+      });
+      return { success: true, content: localPage.content, isCached: true };
     }
 
-    if (needsSync) {
-      console.log(`[SmartPage] Syncing page ${pageId} due to: ${reason}`);
-      const content = await oneNoteService.fetchPageContent(pageId);
-
-      // Save to DB
-      localDB.savePageContent(pageId, content);
-      localStore.savePageContent(pageId, content); // Legacy store backup
-
-      // We might also need to update the lastModifiedDateTime in the DB to avoid re-syncing loop
-      // But fetchPageContent doesn't return metadata. We should probably update it with the meta we fetched or just assume current time.
-      // Ideally we save the whole page object if we have meta.
-      // For now, content update timestamps it in localDB.
-
-      return { success: true, content };
-    }
-
-    return { success: true, content: localPage.content };
+    // 🔄 SLOW PATH: No valid local content — must fetch from remote and block
+    console.log(`[SmartPage] No valid local content for ${pageId}, fetching from remote...`);
+    const content = await oneNoteService.fetchPageContent(pageId);
+    localDB.savePageContent(pageId, content);
+    localStore.savePageContent(pageId, content);
+    return { success: true, content };
   } catch (error) {
     return { success: false, error: error.message };
   }
 });
 
+
+// Smart background sync — queued so only one section syncs at a time (rate limit safety)
+// Shared sync logic — pushes one section's sync task onto the queue
+function enqueueSectionSync(sectionId, event) {
+  bgSyncQueue.push({
+    resolve: () => { },
+    run: async () => {
+      try {
+        const remotePages = await oneNoteService.fetchPages(sectionId);
+        if (!remotePages || remotePages.length === 0) return;
+
+        const localMap = localDB.getPagesForSync(sectionId);
+        const pagesToSync = remotePages.filter(remotePage => {
+          const local = localMap.get(remotePage.id);
+          if (!local) return true;
+          if (!local.hasContent) return true;
+          if (!local.lastModifiedDateTime) return true;
+          return remotePage.lastModifiedDateTime > local.lastModifiedDateTime;
+        });
+
+        if (pagesToSync.length === 0) return;
+
+        console.log(`[BgSync] ${pagesToSync.length}/${remotePages.length} need syncing — section ${sectionId}`);
+
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('bg-cache-total', { total: pagesToSync.length, sectionId });
+        }
+
+        for (const remotePage of pagesToSync) {
+          if (event.sender.isDestroyed()) break;
+          const pageId = remotePage.id;
+          try {
+            event.sender.send('bg-cache-progress', { pageId, status: 'caching' });
+            const content = await oneNoteService.fetchPageContent(pageId);
+            localDB.savePageContent(pageId, content);
+            localDB.updatePageTimestamp(pageId, remotePage.lastModifiedDateTime);
+            localStore.savePageContent(pageId, content);
+            event.sender.send('bg-cache-progress', { pageId, status: 'done' });
+            await new Promise(r => setTimeout(r, 500));
+          } catch (err) {
+            console.warn(`[BgSync] Failed ${pageId}:`, err.message);
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('bg-cache-progress', { pageId, status: 'error', error: err.message });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[BgSync] Section error:', err.message);
+      }
+    }
+  });
+}
+
+ipcMain.handle('background-cache-pages', async (event, { sectionId }) => {
+  let resolveTask;
+  const taskDone = new Promise(res => { resolveTask = res; });
+  // Override resolve so caller can await this specific section
+  enqueueSectionSync(sectionId, event);
+  const task = bgSyncQueue[bgSyncQueue.length - 1];
+  task.resolve = resolveTask;
+  runNextBgSync();
+  await taskDone;
+  return { success: true };
+});
+
+// Startup: queue ALL known sections for background sync
+ipcMain.handle('background-cache-all-sections', async (event) => {
+  const sectionIds = localDB.getAllSectionIds();
+  console.log(`[BgSync] Startup: queuing ${sectionIds.length} sections for background sync`);
+  for (const sectionId of sectionIds) {
+    enqueueSectionSync(sectionId, event);
+  }
+  runNextBgSync();
+  return { success: true, queued: sectionIds.length };
+});
 
 // --- Prompts Handlers ---
 
@@ -966,6 +1024,53 @@ ipcMain.handle('settings-save', async (event, { key, value }) => {
     localDB.saveSetting(key, value);
     return { success: true };
   } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// --- Section Group Batch Handler ---
+// Collects ALL pages across ALL sections in a section group, with prompt counts & content statuses.
+// Used by the one-click "Run All ChatGPT" feature on a section group.
+ipcMain.handle('onenote-get-section-group-pages', async (event, { groupId, groupData }) => {
+  try {
+    // Helper: recursively collect all sections from a section group tree
+    const collectSections = (group) => {
+      const sections = [];
+      for (const s of group.sections || []) sections.push(s);
+      for (const childGroup of group.childGroups || []) {
+        sections.push(...collectSections(childGroup));
+      }
+      return sections;
+    };
+
+    const allSections = collectSections(groupData);
+    console.log(`[BatchGroup] Found ${allSections.length} sections in group "${groupData.displayName}"`);
+
+    const allPages = [];
+    const promptCounts = {};
+    const contentStatuses = {};
+
+    for (const section of allSections) {
+      // Get pages from local DB first for speed
+      const localPages = localDB.getPages(section.id);
+      const sectionPages = localPages.length > 0 ? localPages : (section.pages || []);
+
+      for (const page of sectionPages) {
+        if (page.isDeleted) continue;
+        allPages.push({
+          ...page,
+          sectionId: section.id,
+          sectionName: section.displayName,
+        });
+        promptCounts[page.id] = localDB.getPromptCount(page.id);
+        contentStatuses[page.id] = localDB.getPageContentStatus(page.id);
+      }
+    }
+
+    console.log(`[BatchGroup] Total pages: ${allPages.length}`);
+    return { success: true, pages: allPages, promptCounts, contentStatuses, sectionCount: allSections.length };
+  } catch (error) {
+    console.error('[BatchGroup] Error:', error);
     return { success: false, error: error.message };
   }
 });

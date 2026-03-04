@@ -7,6 +7,7 @@ import LogPanel from './components/LogPanel/LogPanel';
 import PromptsPanel from './components/PromptsPanel/PromptsPanel';
 import TopBar from './components/TopBar';
 import SettingsModal from './components/SettingsModal/SettingsModal';
+import BatchControlPanel from './components/BatchControlPanel/BatchControlPanel';
 import { extractScriptFromHTML } from './utils/scriptExtractor';
 import { electron } from './services/electron';
 
@@ -19,6 +20,14 @@ function App() {
     const [isPageLoading, setIsPageLoading] = useState(false);
     const [error, setError] = useState(null);
     const [isSyncing, setIsSyncing] = useState(false);
+
+    // Batch run state
+    const [batchProgress, setBatchProgress] = useState(null); // null = hidden
+    const [isPaused, setIsPaused] = useState(false);
+    const [pageStatuses, setPageStatuses] = useState({});   // { [pageId]: contentStatus }
+    const [promptCounts, setPromptCounts] = useState({});   // { [pageId]: number }
+    const [cachingPageIds, setCachingPageIds] = useState(new Set()); // pages being bg-cached
+    const [syncStats, setSyncStats] = useState({ total: 0, done: 0 }); // global sync counter
 
     // Theme State
     const [theme, setTheme] = useState(() => {
@@ -54,9 +63,74 @@ function App() {
     const [promptsPanelWidth, setPromptsPanelWidth] = useState(320);
     const [oneNoteUser, setOneNoteUser] = useState(null);
 
-    // Initial Load: Fetch Notebooks & Check Auth
+    // Initial Load & Event Listeners
     useEffect(() => {
         checkAuthAndLoad();
+
+        const unsubs = [];
+        if (electron.onOneNotePageUpdated) {
+            unsubs.push(electron.onOneNotePageUpdated(({ pageId, content }) => {
+                setPages(prev => prev.map(p =>
+                    p.id === pageId ? { ...p, content } : p
+                ));
+            }));
+        }
+
+        // Batch progress event from automation-runner
+        if (electron.onAutomationBatchProgress) {
+            const unsub = electron.onAutomationBatchProgress((progressData) => {
+                setBatchProgress(progressData);
+                if (progressData.status === 'done' || progressData.status === 'stopped' || progressData.status === 'idle') {
+                    setIsPaused(false);
+                }
+            });
+            if (unsub) unsubs.push(unsub);
+        }
+
+        // Background cache — total pages incoming for this section
+        if (electron.onBgCacheTotal) {
+            const unsub = electron.onBgCacheTotal(({ total }) => {
+                setSyncStats(prev => ({ total: prev.total + total, done: prev.done }));
+            });
+            if (unsub) unsubs.push(unsub);
+        }
+
+        // Background cache progress
+        if (electron.onBgCacheProgress) {
+            const unsub = electron.onBgCacheProgress(({ pageId, status }) => {
+                setCachingPageIds(prev => {
+                    const next = new Set(prev);
+                    if (status === 'caching') next.add(pageId);
+                    else next.delete(pageId);
+                    return next;
+                });
+                if (status === 'done') {
+                    // Increment global sync counter, reset when all done
+                    setSyncStats(prev => {
+                        const done = prev.done + 1;
+                        return done >= prev.total ? { total: 0, done: 0 } : { ...prev, done };
+                    });
+                    // Mark as cached in status badges
+                    setPageStatuses(prev => ({
+                        ...prev,
+                        [pageId]: { ...prev[pageId], hasCachedContent: true, exists: true }
+                    }));
+                    // Push fresh content into pages state so opening it is instant
+                    electron.oneNoteGetPageContent(pageId).then(result => {
+                        if (result.success && result.content) {
+                            setPages(prev => prev.map(p =>
+                                p.id === pageId ? { ...p, content: result.content } : p
+                            ));
+                        }
+                    }).catch(() => {});
+                }
+            });
+            if (unsub) unsubs.push(unsub);
+        }
+
+        return () => {
+            unsubs.forEach(unsub => unsub && unsub());
+        };
     }, []);
 
     const getClientId = () => {
@@ -97,22 +171,44 @@ function App() {
             console.log("Fetching local data...");
             const localResult = await electron.oneNoteGetLocalData();
             console.log("Local data result:", localResult);
-
-            if (localResult && localResult.notebooks) {
+            if (localResult && localResult.notebooks && localResult.notebooks.length > 0) {
                 console.log("Setting notebooks from local data:", localResult.notebooks.length);
                 setNotebooks(localResult.notebooks);
+                setIsLoading(false); // Stop main loading indicator so user can interact immediately
+                // Startup background sync: check ALL sections for timestamp changes, download only what's new/changed
+                electron.backgroundCacheAllSections().catch(() => {});
             } else {
                 console.log("No local data found or empty notebooks list.");
             }
 
-            // Fetch remote notebooks if authenticated
-            console.log("Fetching remote notebooks...");
+            // Fetch remote notebooks background check for new/deleted items
+            console.log("Fetching remote notebooks async...");
             const result = await electron.oneNoteGetNotebooks();
             console.log("Remote fetch result:", result);
 
             if (result.success) {
-                console.log("Successfully fetched notebooks:", result.notebooks?.length || 0);
-                setNotebooks(result.notebooks || []);
+                console.log("Successfully fetched remote notebooks:", result.notebooks?.length || 0);
+                // Merge carefully to prevent overwriting existing nested sections/groups in local cache
+                setNotebooks(prev => {
+                    if (!prev || prev.length === 0) return result.notebooks || [];
+
+                    const remoteNotebooks = result.notebooks || [];
+                    const prevMap = new Map(prev.map(n => [n.id, n]));
+
+                    return remoteNotebooks.map(remote => {
+                        const existing = prevMap.get(remote.id);
+                        if (existing) {
+                            // Preserve local sections and childGroups while updating top-level notebook metadata
+                            return {
+                                ...remote,
+                                sections: existing.sections || [],
+                                childGroups: existing.childGroups || []
+                            };
+                        }
+                        return remote;
+                    });
+                });
+
                 if (!result.notebooks || result.notebooks.length === 0) {
                     setError("No notebooks found. Try clicking 'Sync Notebooks' or create a notebook in OneNote first.");
                 }
@@ -229,33 +325,21 @@ function App() {
                 // First get the list of pages (lightweight)
                 const result = await electron.oneNoteGetPages({ sectionId: item.id });
                 if (result.success) {
-                    // Set pages initially so user sees the list immediately
+                    // Set pages initially so user sees the list immediately from local cache
                     setPages(result.pages);
 
-                    // Then trigger the sync to get content
-                    const syncResult = await electron.oneNoteSyncSection(item.id);
-                    if (syncResult && syncResult.success && Array.isArray(syncResult.pages)) {
-                        // Merge content into existing pages
-                        setPages(prev => {
-                            if (!Array.isArray(prev)) return syncResult.pages;
-                            try {
-                                const contentMap = new Map(syncResult.pages.map(p => [p.id, p]));
-                                return prev.map(p => {
-                                    const synced = contentMap.get(p.id);
-                                    return synced ? { ...p, ...synced } : p;
-                                });
-                            } catch (e) {
-                                console.error("Error merging pages:", e);
-                                return prev;
-                            }
-                        });
-                    }
+                    // Stop blocking UI immediately for local rendering!
+                    setIsPageLoading(false);
+
+                    // Background cache: compare timestamps vs OneNote, download only changed pages
+                    electron.backgroundCachePages({ sectionId: item.id }).catch(() => {});
                 } else {
                     console.error("Failed to load pages:", result.error);
                 }
             } catch (err) {
                 console.error("Error loading pages:", err);
             } finally {
+                // Ensure flag is reset even on error
                 setIsPageLoading(false);
             }
         }
@@ -278,9 +362,13 @@ function App() {
                 setPages(prev => prev.map(p =>
                     p.id === page.id ? { ...p, content: result.content } : p
                 ));
+            } else {
+                console.warn("Server returned no success:", result.error);
+                setError(`Failed to fetch content: ${result.error || "Unknown error"}`);
             }
         } catch (err) {
-            console.error("Failed to fetch content", err);
+            console.error("Failed to fetch content exceptions", err);
+            setError(`Failed to fetch content: ${err.message}`);
         } finally {
             setIsPageLoading(false);
         }
@@ -369,6 +457,153 @@ function App() {
         });
     };
 
+    const handleRunBatch = async (type, options = {}) => {
+        if (!pages || pages.length === 0) return;
+
+        setIsLogPanelOpen(true);
+        setBatchProgress({ status: 'starting', current: 0, total: pages.length });
+
+        let basePrompt = '';
+        if (type === 'chatgpt') {
+            try {
+                const result = await electron.settingsGet('base_prompt');
+                if (result.success && result.value) basePrompt = result.value;
+            } catch (e) { console.error('Failed to fetch base prompt', e); }
+        }
+
+        setIsPageLoading(true);
+        let fullyLoadedPages = [...pages];
+
+        try {
+            if (selectedSectionId) {
+                const syncResult = await electron.oneNoteSyncSection(selectedSectionId);
+                if (syncResult && syncResult.success && Array.isArray(syncResult.pages)) {
+                    fullyLoadedPages = syncResult.pages;
+                }
+            } else {
+                for (let i = 0; i < fullyLoadedPages.length; i++) {
+                    const p = fullyLoadedPages[i];
+                    if (!p.content) {
+                        try {
+                            const result = await electron.oneNoteGetPageContent(p.id);
+                            if (result.success) fullyLoadedPages[i] = { ...p, content: result.content };
+                        } catch (e) { console.error('Failed to fetch content', e); }
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('Failed to sync section for batch:', err);
+        }
+
+        setPages(fullyLoadedPages);
+        setIsPageLoading(false);
+
+        const pagesWithOptions = fullyLoadedPages.map(p => ({
+            ...p,
+            content: extractScriptFromHTML(p.content || '')
+        }));
+
+        electron.runAutomation(type, {
+            mode: type,
+            pages: pagesWithOptions,
+            basePrompt,
+            ...options
+        });
+    };
+
+    // -----------------------------------------------------------------------
+    // Section Group Batch Run — one-click "Run All ChatGPT for this group"
+    // -----------------------------------------------------------------------
+    const handleRunSectionGroupBatch = async (type, groupItem) => {
+        if (!groupItem) return;
+
+        setIsLogPanelOpen(true);
+        if (type === 'chatgpt') setIsPromptsPanelOpen(true);
+        setBatchProgress({ status: 'starting', current: 0, total: 0 });
+
+        try {
+            // 1. Collect all pages across all sections in the group
+            const result = await electron.oneNoteGetSectionGroupPages({
+                groupId: groupItem.id,
+                groupData: groupItem
+            });
+
+            if (!result.success) {
+                console.error('Failed to get section group pages:', result.error);
+                setBatchProgress(null);
+                return;
+            }
+
+            const { pages: allPages, promptCounts: pCounts, contentStatuses, sectionCount } = result;
+
+            // Merge content statuses and prompt counts into state for badge display
+            setPageStatuses(prev => ({ ...prev, ...contentStatuses }));
+            setPromptCounts(prev => ({ ...prev, ...pCounts }));
+
+            setBatchProgress({ status: 'starting', current: 0, total: allPages.length });
+            console.log(`[GroupBatch] ${allPages.length} pages across ${sectionCount} sections`);
+
+            // 2. Fetch base prompt
+            let basePrompt = '';
+            if (type === 'chatgpt') {
+                try {
+                    const s = await electron.settingsGet('base_prompt');
+                    if (s.success && s.value) basePrompt = s.value;
+                } catch (e) { console.error('Failed to fetch base prompt', e); }
+            }
+
+            // 3. Resolve content for pages that don't have it cached
+            const pagesNeedingContent = allPages.filter(p => !contentStatuses[p.id]?.hasCachedContent);
+            if (pagesNeedingContent.length > 0) {
+                console.log(`[GroupBatch] Fetching content for ${pagesNeedingContent.length} uncached pages...`);
+            }
+
+            // Build pages array — extract script from content (for chatgpt mode)
+            const pagesWithScript = allPages.map(p => ({
+                ...p,
+                content: extractScriptFromHTML(p.content || ''),
+            }));
+
+            // 4. Run the automation — skip pages that already have prompts
+            electron.runAutomation(type, {
+                mode: type,
+                pages: pagesWithScript,
+                basePrompt,
+                skipIfHasPrompts: true,
+                ...{}
+            });
+        } catch (err) {
+            console.error('[GroupBatch] Error:', err);
+            setBatchProgress(null);
+        }
+    };
+
+    // Pause / Stop / Retry Gemini handlers for BatchControlPanel
+    const handleBatchPause = () => {
+        setIsPaused(true);
+        electron.setAutomationControl({ action: 'pause' });
+    };
+    const handleBatchResume = () => {
+        setIsPaused(false);
+        electron.setAutomationControl({ action: 'resume' });
+    };
+    const handleBatchStop = () => {
+        setIsPaused(false);
+        electron.setAutomationControl({ action: 'stop' });
+    };
+    const handleBatchDismiss = () => {
+        setBatchProgress(null);
+    };
+    const handleRetryGemini = async () => {
+        if (!batchProgress || !pages.length) return;
+        setIsLogPanelOpen(true);
+        setBatchProgress({ status: 'starting', current: 0, total: pages.length });
+        electron.runAutomation('gemini-retry', {
+            mode: 'gemini-retry',
+            pages: pages.map(p => ({ ...p, content: '' })), // pageId is what matters
+        });
+    };
+
     return (
         <div className="h-screen w-screen bg-background text-text-main flex flex-col overflow-hidden">
             <SettingsModal
@@ -420,6 +655,8 @@ function App() {
                             onSync={handleSync}
                             isSyncing={isSyncing}
                             onSettings={() => setIsSettingsOpen(true)}
+                            onRunSectionGroupBatch={handleRunSectionGroupBatch}
+                            syncStats={syncStats}
                         />
                     </div>
                 </div>
@@ -434,6 +671,11 @@ function App() {
                             pages={pages}
                             selectedPageId={selectedPageId}
                             onSelectPage={handlePageSelect}
+                            onRunBatch={handleRunBatch}
+                            pageStatuses={pageStatuses}
+                            promptCounts={promptCounts}
+                            cachingPageIds={cachingPageIds}
+                            syncStats={syncStats}
                         />
                     </div>
                 </div>
@@ -466,6 +708,17 @@ function App() {
                     )}
                 </div>
             </div>
+
+            {/* Floating Batch Control Panel */}
+            <BatchControlPanel
+                progress={batchProgress}
+                isPaused={isPaused}
+                onPause={handleBatchPause}
+                onResume={handleBatchResume}
+                onStop={handleBatchStop}
+                onRetryGemini={handleRetryGemini}
+                onDismiss={handleBatchDismiss}
+            />
         </div>
     );
 }

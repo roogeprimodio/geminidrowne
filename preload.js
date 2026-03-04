@@ -39,13 +39,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   oneNoteSyncHierarchy: (data) => ipcRenderer.invoke('onenote-sync-hierarchy', data),
   oneNoteSyncCompleteNotebook: (data) => ipcRenderer.invoke('onenote-sync-complete-notebook', data),
   oneNoteFetchStructure: (data) => ipcRenderer.invoke('onenote-fetch-structure', data),
-  oneNoteFetchSectionContent: (data) => ipcRenderer.invoke('onenote-fetch-section-content', data),
+  oneNoteSyncSection: (payload) => ipcRenderer.invoke('onenote-sync-section', payload),
   oneNoteCreateStructure: (data) => ipcRenderer.invoke('onenote-create-structure', data),
   promptsGet: (pageId) => ipcRenderer.invoke('prompts-get', { pageId }),
   promptsAdd: (payload) => ipcRenderer.invoke('prompts-add', payload),
   promptsDelete: (id) => ipcRenderer.invoke('prompts-delete', { id }),
   promptsToggleSkip: (payload) => ipcRenderer.invoke('prompts-toggle-skip', payload),
   promptsToggleSkipAll: (payload) => ipcRenderer.invoke('prompts-toggle-skip-all', payload),
+  oneNoteGetSectionGroupPages: (payload) => ipcRenderer.invoke('onenote-get-section-group-pages', payload),
   settingsGet: (key) => ipcRenderer.invoke('settings-get', { key }),
   settingsSave: (payload) => ipcRenderer.invoke('settings-save', payload),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
@@ -85,5 +86,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const subscription = (_, progress) => callback(progress);
     ipcRenderer.on('onenote-sync-progress', subscription);
     return () => ipcRenderer.removeListener('onenote-sync-progress', subscription);
+  },
+  onOneNotePageUpdated: callback => {
+    const subscription = (_, payload) => callback(payload);
+    ipcRenderer.on('onenote-page-updated', subscription);
+    return () => ipcRenderer.removeListener('onenote-page-updated', subscription);
+  },
+  onAutomationBatchProgress: callback => {
+    const subscription = (_, payload) => callback(payload);
+    ipcRenderer.on('automation-batch-progress', subscription);
+    return () => ipcRenderer.removeListener('automation-batch-progress', subscription);
+  },
+  backgroundCachePages: (payload) => ipcRenderer.invoke('background-cache-pages', payload),
+  backgroundCacheAllSections: () => ipcRenderer.invoke('background-cache-all-sections'),
+  onBgCacheProgress: (callback) => {
+    const listener = (_, data) => callback(data);
+    ipcRenderer.on('bg-cache-progress', listener);
+    return () => ipcRenderer.removeListener('bg-cache-progress', listener);
+  },
+  onBgCacheTotal: (callback) => {
+    const listener = (_, data) => callback(data);
+    ipcRenderer.on('bg-cache-total', listener);
+    return () => ipcRenderer.removeListener('bg-cache-total', listener);
   }
 });

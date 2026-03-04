@@ -6,17 +6,19 @@ import {
     Hash,
     Settings,
     BookOpen,
-    Download
+    Download,
+    Play
 } from 'lucide-react';
 
-const SidebarItem = ({ item, level = 0, onSelect, onExpand, selectedId, expandedIds, toggleExpand }) => {
+const SidebarItem = ({ item, level = 0, onSelect, onExpand, selectedId, expandedIds, toggleExpand, onRunSectionGroupBatch }) => {
+    const [isHovered, setIsHovered] = useState(false);
     const isExpanded = expandedIds.includes(item.id);
-    // Notebooks and SectionGroups should always be expandable to allow lazy loading
     const hasChildren = (item.sections && item.sections.length > 0) ||
         (item.childGroups && item.childGroups.length > 0) ||
         item.type === 'notebook' ||
         item.type === 'sectionGroup';
     const isSelected = selectedId === item.id;
+    const isSectionGroup = item.type === 'sectionGroup';
 
     const paddingLeft = `${level * 12 + 12}px`;
 
@@ -24,11 +26,13 @@ const SidebarItem = ({ item, level = 0, onSelect, onExpand, selectedId, expanded
         <div>
             <div
                 className={`
-          flex items-center py-1 pr-2 cursor-pointer
+          flex items-center py-1 pr-2 cursor-pointer group
           ${isSelected ? 'bg-primary/20 text-primary' : 'text-text-muted hover:bg-surface-hover hover:text-text-main'}
           ${item.isDeleted ? 'line-through text-red-500/70 opacity-60' : ''}
         `}
                 style={{ paddingLeft }}
+                onMouseEnter={() => setIsHovered(true)}
+                onMouseLeave={() => setIsHovered(false)}
                 onClick={() => {
                     if (hasChildren) {
                         toggleExpand(item.id);
@@ -53,7 +57,22 @@ const SidebarItem = ({ item, level = 0, onSelect, onExpand, selectedId, expanded
                     {item.type === 'section' && <Hash size={16} />}
                 </span>
 
-                <span className="text-sm truncate select-none">{item.displayName || item.name}</span>
+                <span className="text-sm truncate select-none flex-1">{item.displayName || item.name}</span>
+
+                {/* Run All ChatGPT button — shows on hover for sectionGroups */}
+                {isSectionGroup && isHovered && onRunSectionGroupBatch && (
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onRunSectionGroupBatch('chatgpt', item);
+                        }}
+                        title="Run All ChatGPT for this group"
+                        className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 ml-1 rounded text-[10px] bg-green-900/60 hover:bg-green-700 text-green-400 hover:text-white border border-green-800 transition-all"
+                    >
+                        <Play size={9} />
+                        All
+                    </button>
+                )}
             </div>
 
             {isExpanded && hasChildren && (
@@ -68,6 +87,7 @@ const SidebarItem = ({ item, level = 0, onSelect, onExpand, selectedId, expanded
                             selectedId={selectedId}
                             expandedIds={expandedIds}
                             toggleExpand={toggleExpand}
+                            onRunSectionGroupBatch={onRunSectionGroupBatch}
                         />
                     ))}
                     {item.sections?.map(section => (
@@ -80,6 +100,7 @@ const SidebarItem = ({ item, level = 0, onSelect, onExpand, selectedId, expanded
                             selectedId={selectedId}
                             expandedIds={expandedIds}
                             toggleExpand={toggleExpand}
+                            onRunSectionGroupBatch={onRunSectionGroupBatch}
                         />
                     ))}
                 </div>
@@ -88,7 +109,8 @@ const SidebarItem = ({ item, level = 0, onSelect, onExpand, selectedId, expanded
     );
 };
 
-const Sidebar = ({ data = [], onSelect, onExpand, selectedId, onSync, isSyncing, onSettings }) => {
+
+const Sidebar = ({ data = [], onSelect, onExpand, selectedId, onSync, isSyncing, onSettings, onRunSectionGroupBatch, syncStats = { total: 0, done: 0 } }) => {
     const [expandedIds, setExpandedIds] = useState([]);
 
     const toggleExpand = (id) => {
@@ -128,6 +150,7 @@ const Sidebar = ({ data = [], onSelect, onExpand, selectedId, onSync, isSyncing,
                             selectedId={selectedId}
                             expandedIds={expandedIds}
                             toggleExpand={toggleExpand}
+                            onRunSectionGroupBatch={onRunSectionGroupBatch}
                         />
                     ))
                 )}
@@ -135,12 +158,19 @@ const Sidebar = ({ data = [], onSelect, onExpand, selectedId, onSync, isSyncing,
 
             <div className="p-2 border-t border-border space-y-1">
                 <button
-                    className={`w-full flex items-center gap-3 px-3 py-2 text-sm text-text-muted hover:text-text-main hover:bg-surface-hover rounded-md transition-colors ${isSyncing ? 'animate-pulse' : ''}`}
+                    className={`w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md transition-colors ${isSyncing || syncStats.total > 0 ? 'text-blue-400/80 bg-blue-500/5' : 'text-text-muted hover:text-text-main hover:bg-surface-hover'}`}
                     onClick={onSync}
                     disabled={isSyncing}
                 >
-                    <Download size={18} className={isSyncing ? "animate-spin" : ""} />
-                    <span>{isSyncing ? "Syncing..." : "Sync Notebooks"}</span>
+                    <svg className={`w-[18px] h-[18px] flex-shrink-0 ${isSyncing || syncStats.total > 0 ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    <span className="flex-1 text-left">
+                        {isSyncing ? 'Syncing notebooks...' : syncStats.total > 0 ? `Caching pages...` : 'Sync Notebooks'}
+                    </span>
+                    {syncStats.total > 0 && (
+                        <span className="text-[10px] font-semibold tabular-nums text-blue-400/80">
+                            {syncStats.done}/{syncStats.total}
+                        </span>
+                    )}
                 </button>
                 <button
                     className="w-full flex items-center gap-3 px-3 py-2 text-sm text-text-muted hover:text-text-main hover:bg-surface-hover rounded-md transition-colors"

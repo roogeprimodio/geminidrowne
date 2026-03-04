@@ -315,98 +315,83 @@ class LocalDatabase {
 
     // Load all notebooks from local DB
     loadNotebooks() {
-        const notebooks = this.db.prepare('SELECT * FROM notebooks ORDER BY displayName ASC').all();
-
-        if (!notebooks.length) {
+        // Fetch all flat data in exactly 4 queries to prevent N+1 bottleneck
+        const notebooksData = this.db.prepare('SELECT * FROM notebooks ORDER BY displayName ASC').all();
+        if (!notebooksData.length) {
             console.log('[LocalDB] No cached notebooks found');
             return [];
         }
 
-        const result = notebooks.map(nb => {
+        const groupsData = this.db.prepare('SELECT * FROM section_groups ORDER BY displayName ASC').all();
+        const sectionsData = this.db.prepare('SELECT * FROM sections ORDER BY displayName ASC').all();
+        // Specifically exclude the heavy 'content' column to save massive amounts of RAM on startup
+        const pagesData = this.db.prepare('SELECT id, title, sectionId, lastModifiedDateTime, isDeleted, data, syncedAt FROM pages ORDER BY title ASC').all();
+
+        // 1. Process Pages into a map keyed by sectionId
+        const pagesBySection = {};
+        for (const p of pagesData) {
+            const page = JSON.parse(p.data);
+            page.isDeleted = p.isDeleted === 1;
+            // Content is explicitly omitted. It will be fetched on demand.
+
+            if (!pagesBySection[p.sectionId]) pagesBySection[p.sectionId] = [];
+            pagesBySection[p.sectionId].push(page);
+        }
+
+        // 2. Process Sections into maps keyed by parentNotebookId and parentGroupId
+        const sectionsByNotebook = {};
+        const sectionsByGroup = {};
+        for (const s of sectionsData) {
+            const section = JSON.parse(s.data);
+            section.isDeleted = s.isDeleted === 1;
+            section.pages = pagesBySection[s.id] || [];
+
+            if (s.parentGroupId) {
+                if (!sectionsByGroup[s.parentGroupId]) sectionsByGroup[s.parentGroupId] = [];
+                sectionsByGroup[s.parentGroupId].push(section);
+            } else if (s.parentNotebookId) {
+                if (!sectionsByNotebook[s.parentNotebookId]) sectionsByNotebook[s.parentNotebookId] = [];
+                sectionsByNotebook[s.parentNotebookId].push(section);
+            }
+        }
+
+        // 3. Process Section Groups into maps keyed by parentNotebookId and parentGroupId
+        const groupsByNotebook = {};
+        const groupsByGroup = {};
+
+        // Helper to recursively build groups
+        const buildGroupNode = (groupRow) => {
+            const group = JSON.parse(groupRow.data);
+            group.isDeleted = groupRow.isDeleted === 1;
+            group.sections = sectionsByGroup[groupRow.id] || [];
+
+            // Find children of this group
+            const childGroupRows = groupsData.filter(g => g.parentGroupId === groupRow.id);
+            group.childGroups = childGroupRows.map(buildGroupNode);
+            return group;
+        };
+
+        // Find top-level groups (those with a notebook parent but no group parent)
+        for (const g of groupsData) {
+            if (g.parentNotebookId && !g.parentGroupId) {
+                if (!groupsByNotebook[g.parentNotebookId]) groupsByNotebook[g.parentNotebookId] = [];
+                groupsByNotebook[g.parentNotebookId].push(buildGroupNode(g));
+            }
+        }
+
+        // 4. Finally, assemble the notebooks
+        const result = notebooksData.map(nb => {
             const notebook = JSON.parse(nb.data);
             notebook.isDeleted = nb.isDeleted === 1;
 
-            // Load section groups
-            const loadGroups = (parentGroupId = null) => {
-                const groups = this.db.prepare(`
-                    SELECT * FROM section_groups 
-                    WHERE parentNotebookId = ? AND parentGroupId ${parentGroupId ? '= ?' : 'IS NULL'}
-                    ORDER BY displayName ASC
-                `).all(parentGroupId ? [notebook.id, parentGroupId] : [notebook.id]);
-
-                return groups.map(g => {
-                    const group = JSON.parse(g.data);
-                    group.isDeleted = g.isDeleted === 1;
-
-                    // Recursive nested groups
-                    group.childGroups = loadGroups(group.id);
-
-                    // Load sections in this group
-                    const sections = this.db.prepare(`
-                        SELECT * FROM sections 
-                        WHERE parentGroupId = ?
-                        ORDER BY displayName ASC
-                    `).all(group.id);
-
-                    group.sections = sections.map(s => {
-                        const section = JSON.parse(s.data);
-                        section.isDeleted = s.isDeleted === 1;
-
-                        // Load pages
-                        const pages = this.db.prepare(`
-                            SELECT * FROM pages 
-                            WHERE sectionId = ?
-                            ORDER BY title ASC
-                        `).all(section.id);
-
-                        section.pages = pages.map(p => {
-                            const page = JSON.parse(p.data);
-                            page.isDeleted = p.isDeleted === 1;
-                            page.content = p.content;
-                            return page;
-                        });
-
-                        return section;
-                    });
-
-                    return group;
-                });
-            };
-
-            notebook.childGroups = loadGroups();
-
-            // Load sections directly under notebook
-            const sections = this.db.prepare(`
-                SELECT * FROM sections 
-                WHERE parentNotebookId = ? AND parentGroupId IS NULL
-                ORDER BY displayName ASC
-            `).all(notebook.id);
-
-            notebook.sections = sections.map(s => {
-                const section = JSON.parse(s.data);
-                section.isDeleted = s.isDeleted === 1;
-
-                // Load pages
-                const pages = this.db.prepare(`
-                    SELECT * FROM pages 
-                    WHERE sectionId = ?
-                    ORDER BY title ASC
-                `).all(section.id);
-
-                section.pages = pages.map(p => {
-                    const page = JSON.parse(p.data);
-                    page.isDeleted = p.isDeleted === 1;
-                    page.content = p.content;
-                    return page;
-                });
-
-                return section;
-            });
+            // Attach top-level groups and sections
+            notebook.childGroups = groupsByNotebook[nb.id] || [];
+            notebook.sections = sectionsByNotebook[nb.id] || [];
 
             return notebook;
         });
 
-        console.log('[LocalDB] Loaded', result.length, 'notebooks from cache');
+        console.log('[LocalDB] Loaded', result.length, 'notebooks from cache (Flat Query Optimized)');
         return result;
     }
 
@@ -501,6 +486,118 @@ class LocalDatabase {
 
     deletePrompt(id) {
         this.db.prepare('DELETE FROM prompts WHERE id = ?').run(id);
+    }
+
+    // Returns the number of saved prompts for a page — used for skip-if-done checks
+    getPromptCount(pageId) {
+        const result = this.db.prepare('SELECT COUNT(*) as cnt FROM prompts WHERE pageId = ?').get(pageId);
+        return result ? result.cnt : 0;
+    }
+
+    // Returns a single page row with its full HTML content (used as DB fallback in automation)
+    getPage(pageId) {
+        return this.db.prepare('SELECT id, title, sectionId, content, lastModifiedDateTime, syncedAt FROM pages WHERE id = ?').get(pageId) || null;
+    }
+
+    // Returns lightweight content availability metadata for a page
+    getPageContentStatus(pageId) {
+        const p = this.db.prepare(
+            'SELECT id, content, lastModifiedDateTime, syncedAt FROM pages WHERE id = ?'
+        ).get(pageId);
+        if (!p) return { exists: false, hasCachedContent: false, contentLength: 0, lastSync: null, lastModified: null };
+        const hasContent = p.content && p.content.trim().length > 200;
+        return {
+            exists: true,
+            hasCachedContent: hasContent,
+            contentLength: p.content ? p.content.length : 0,
+            lastSync: p.syncedAt,
+            lastModified: p.lastModifiedDateTime
+        };
+    }
+
+    /**
+     * Returns the breadcrumb path for a page as an ordered array of display names,
+     * e.g. ['2026 Ground', '02', 'Day 1'].
+     * Used by Gemini flows to build the nested folder structure for image saving.
+     */
+    getPageHierarchyPath(pageId) {
+        try {
+            const page = this.db.prepare('SELECT id, title, parentSectionId FROM pages WHERE id = ?').get(pageId);
+            if (!page) return [pageId];
+
+            const path = [page.title || 'Untitled Page'];
+
+            // Walk up: section → section group → notebook
+            let sectionId = page.parentSectionId;
+            if (sectionId) {
+                const section = this.db.prepare('SELECT id, displayName, parentSectionGroupId, parentNotebookId FROM sections WHERE id = ?').get(sectionId);
+                if (section) {
+                    path.unshift(section.displayName || 'Section');
+
+                    // Section Group chain
+                    let groupId = section.parentSectionGroupId;
+                    const visitedGroups = new Set();
+                    while (groupId && !visitedGroups.has(groupId)) {
+                        visitedGroups.add(groupId);
+                        const group = this.db.prepare('SELECT id, displayName, parentSectionGroupId, parentNotebookId FROM section_groups WHERE id = ?').get(groupId);
+                        if (!group) break;
+                        path.unshift(group.displayName || 'Group');
+                        groupId = group.parentSectionGroupId;
+                        if (group.parentNotebookId) {
+                            const nb = this.db.prepare('SELECT displayName FROM notebooks WHERE id = ?').get(group.parentNotebookId);
+                            if (nb) path.unshift(nb.displayName || 'Notebook');
+                            break;
+                        }
+                    }
+
+                    // Direct notebook link if no group
+                    if (!section.parentSectionGroupId && section.parentNotebookId) {
+                        const nb = this.db.prepare('SELECT displayName FROM notebooks WHERE id = ?').get(section.parentNotebookId);
+                        if (nb) path.unshift(nb.displayName || 'Notebook');
+                    }
+                }
+            }
+
+            return path;
+        } catch (err) {
+            console.error('[DB] getPageHierarchyPath error:', err);
+            return [pageId];
+        }
+    }
+
+    // Returns IDs of pages in a section that have no valid cached content
+    getUncachedPageIds(sectionId) {
+        const rows = this.db.prepare(
+            `SELECT id FROM pages WHERE sectionId = ? AND (content IS NULL OR length(content) < 200) AND isDeleted = 0`
+        ).all(sectionId);
+        return rows.map(r => r.id);
+    }
+
+    // Updates lastModifiedDateTime for a page after syncing content
+    updatePageTimestamp(pageId, lastModifiedDateTime) {
+        this.db.prepare(
+            `UPDATE pages SET lastModifiedDateTime = ?, syncedAt = CURRENT_TIMESTAMP WHERE id = ?`
+        ).run(lastModifiedDateTime, pageId);
+    }
+
+    // Returns a Map of pageId → { lastModifiedDateTime, hasContent } for all pages in a section
+    getPagesForSync(sectionId) {
+        const rows = this.db.prepare(
+            `SELECT id, lastModifiedDateTime, content FROM pages WHERE sectionId = ? AND isDeleted = 0`
+        ).all(sectionId);
+        const map = new Map();
+        for (const row of rows) {
+            map.set(row.id, {
+                lastModifiedDateTime: row.lastModifiedDateTime,
+                hasContent: !!(row.content && row.content.length > 200)
+            });
+        }
+        return map;
+    }
+
+    // Returns all non-deleted section IDs (for startup background sync)
+    getAllSectionIds() {
+        return this.db.prepare('SELECT id FROM sections WHERE isDeleted = 0').all().map(r => r.id);
     }
 
     // --- Settings Management ---

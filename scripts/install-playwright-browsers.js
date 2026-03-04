@@ -3,14 +3,17 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
-const playwrightPackageRoot = path.dirname(require.resolve('playwright/package.json'));
+const playwrightPackageRoot = path.dirname(require.resolve('playwright-core/package.json'));
 const browsersDir = path.join(playwrightPackageRoot, '.local-browsers');
 const playwrightBin = path.join(
   projectRoot,
   'node_modules',
-  '.bin',
-  process.platform === 'win32' ? 'playwright.cmd' : 'playwright'
+  'playwright-core',
+  'cli.js'
 );
+
+const spawnArgs = [playwrightBin, 'install', 'chromium'];
+const cmd = 'node';
 
 function hasChromium() {
   if (!fs.existsSync(browsersDir)) {
@@ -27,6 +30,7 @@ if (hasChromium()) {
 console.log('⬇️  Downloading Playwright Chromium browser into the project (bundled with the app)...');
 const env = {
   ...process.env,
+  // Force Playwright to download into our local directory instead of a global cache
   PLAYWRIGHT_BROWSERS_PATH: browsersDir
 };
 
@@ -35,7 +39,8 @@ if (!fs.existsSync(playwrightBin)) {
   process.exit(1);
 }
 
-const result = spawnSync(playwrightBin, ['install', 'chromium'], {
+// Download chromium. Playwright natively manages the matching minimal ffmpeg binary for it.
+const result = spawnSync(cmd, spawnArgs, {
   stdio: 'inherit',
   env
 });
